@@ -25,8 +25,10 @@ from pufferlib_wrapper import make_vectorized_env
 from rl_utils import (
     CNNFeatureExtractor,
     EpisodeMetricsLogger,
+    VisualizationWindow,
     clip_action_to_space,
     extract_episode_metrics,
+    extract_lap_time_metrics,
     layer_init,
     prepare_observation,
     set_random_seeds,
@@ -70,6 +72,7 @@ class PPOConfig:
     # Misc
     seed: int = 1
     torch_deterministic: bool = True
+    visualize: bool = False
 
 
 class CNNActorCritic(nn.Module):
@@ -229,12 +232,23 @@ class PPOTrainer:
         
         # Setup logging
         self.log_dir, self.model_dir = setup_logging_dirs(config.log_dir, config.model_dir)
+        print(f"TensorBoard log directory: {self.log_dir}")
         self.writer = SummaryWriter(self.log_dir)
         
         # Training state
         self.global_step = 0
         self.update = 0
         self.episode_metrics = EpisodeMetricsLogger()
+        
+        # Track last seen lap counts per environment to detect new laps
+        self.last_seen_lap_counts = [0] * config.num_envs
+        
+        # Setup visualization
+        self.visualize = config.visualize
+        self.visualizer = VisualizationWindow(
+            algorithm_name="PPO",
+            port=config.start_port
+        ) if config.visualize else None
         
     def collect_rollouts(self):
         """Collect rollouts from the environment"""
@@ -267,6 +281,19 @@ class PPOTrainer:
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action_np)
             done = np.logical_or(terminated, truncated)
             
+            # Visualization (show first environment)
+            if self.visualize and self.visualizer is not None:
+                # Get observation from first env (convert from tensor if needed)
+                vis_obs = next_obs[0] if self.config.num_envs > 1 else next_obs
+                if hasattr(vis_obs, 'cpu'):
+                    vis_obs = vis_obs.cpu().numpy()
+                vis_action = action[0] if self.config.num_envs > 1 else action
+                vis_clipped_action = action_np[0] if self.config.num_envs > 1 else action_np
+                vis_reward = reward[0] if isinstance(reward, (np.ndarray, list)) else reward
+                if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward):
+                    # User closed window
+                    self.visualize = False
+            
             # Store in buffer
             self.buffer.add(
                 next_obs,
@@ -281,12 +308,27 @@ class PPOTrainer:
             next_obs = prepare_observation(next_obs_np, self.device)
             next_done = torch.tensor(done, dtype=torch.float32).to(self.device)
             
-            # Log episode metrics
+            # Check for new lap times and log immediately to TensorBoard
+            for idx in range(self.config.num_envs):
+                lap_metrics = extract_lap_time_metrics(info, idx)
+                if lap_metrics:
+                    # Check if lap_count increased (new lap completed)
+                    current_lap_count = lap_metrics.get("lap_count", 0)
+                    if current_lap_count > self.last_seen_lap_counts[idx]:
+                        # New lap completed, log the lap time
+                        if "lap_time" in lap_metrics and lap_metrics["lap_time"] > 0.0:
+                            self.writer.add_scalar("laps/lap_time", lap_metrics["lap_time"], self.global_step)
+                            self.writer.flush()
+                        self.last_seen_lap_counts[idx] = current_lap_count
+            
+            # Log episode metrics and reset lap count tracking on episode end
             for idx, d in enumerate(done):
                 if d:
                     metrics = extract_episode_metrics(info, idx, d)
                     if metrics:
                         self.episode_metrics.add_metrics(metrics)
+                    # Reset lap count tracking when episode ends
+                    self.last_seen_lap_counts[idx] = 0
         
         # Compute returns and advantages
         with torch.no_grad():
@@ -428,6 +470,9 @@ class PPOTrainer:
             self.writer.add_scalar("losses/clipfrac", train_stats["clipfrac"], self.global_step)
             self.writer.add_scalar("losses/explained_variance", train_stats["explained_variance"], self.global_step)
             
+            # Flush to ensure data is written to disk
+            self.writer.flush()
+            
             # Print progress
             sps = int(self.global_step / (time.time() - start_time))
             print(f"Update {update}/{num_updates} | Step {self.global_step} | SPS: {sps}")
@@ -466,6 +511,9 @@ class PPOTrainer:
         print(f"\nSaved final model to {final_model_path}")
         
         self.envs.close()
+        if self.visualizer is not None:
+            self.visualizer.close()
+        self.writer.flush()
         self.writer.close()
         
         total_time = time.time() - start_time
@@ -484,6 +532,7 @@ def main():
     parser.add_argument("--num-steps", type=int, default=2048)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--visualize", action="store_true", help="enable pygame visualization window during training")
     args = parser.parse_args()
     
     # Create config
@@ -497,6 +546,7 @@ def main():
         num_steps=args.num_steps,
         device=args.device,
         seed=args.seed,
+        visualize=args.visualize,
     )
     
     # Create trainer and train

@@ -20,6 +20,7 @@ import pygame
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from utils.sim_starter import start_sim
+from algorithms.rl_utils import process_observation_image, extract_action_value, extract_reward_value
 
 VERBOSITY_LEVELS = {
     "DEBUG": 10,
@@ -44,64 +45,16 @@ class VisualizationCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         obs = self.locals['new_obs']
-        # obs can come in many shapes from the rollout buffer (e.g. (1,3,H,W)).
-        # Convert to a H x W x 3 uint8 image suitable for pygame.surfarray.make_surface.
-        try:
-            import numpy as np
-            arr = np.array(obs)
-        except Exception:
-            # Fallback: use obs directly (pygame will raise a helpful error)
-            arr = obs
-
-        # If batch dimension present (e.g. (1, C, H, W)), take the first item
-        if hasattr(arr, 'ndim') and arr.ndim == 4 and arr.shape[0] == 1:
-            arr = arr[0]
-
-        # If channels-first (C, H, W) -> convert to H, W, C
-        if hasattr(arr, 'ndim') and arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
-            try:
-                arr = arr.transpose(1, 2, 0)
-            except Exception:
-                pass
-
-        # If grayscale 2D image, stack to make 3 channels
-        if hasattr(arr, 'ndim') and arr.ndim == 2:
-            try:
-                arr = np.stack([arr, arr, arr], axis=-1)
-            except Exception:
-                pass
-
-        # Ensure dtype is uint8 in 0-255 range
-        if hasattr(arr, 'dtype'):
-            try:
-                if arr.dtype != np.uint8:
-                    # If values are floats in [0,1], scale up
-                    if arr.max() <= 1.0:
-                        arr = (arr * 255).astype(np.uint8)
-                    else:
-                        arr = arr.astype(np.uint8)
-            except Exception:
-                # If anything goes wrong, leave arr as-is and let pygame error if needed
-                pass
-
-        obs_img = arr
-        
-        # Rotate 90 degrees clockwise
-        try:
-            import numpy as np
-            obs_img = np.rot90(obs_img, k=1)  # k=1 rotates 90 degrees clockwise
-        except Exception:
-            pass
+        # Process observation using shared utility
+        obs_img = process_observation_image(obs)
         
         action = self.locals['actions']
         clipped_action = self.locals['clipped_actions']
         rewards = self.locals['rewards']
 
-        # Extract first element from batch if needed
-        if hasattr(action, 'ndim') and action.ndim > 1:
-            action = action[0]
-        if hasattr(clipped_action, 'ndim') and clipped_action.ndim > 1:
-            clipped_action = clipped_action[0]
+        # Extract first element from batch if needed using shared utility
+        action = extract_action_value(action)
+        clipped_action = extract_action_value(clipped_action)
 
         # obs_img should now be H x W x C
         w, h = obs_img.shape[:2]
@@ -195,11 +148,12 @@ class VisualizationCallback(BaseCallback):
         self.screen.blit(throttle_clipped_text, (value_x, clipped_y + 30))
 
         # Reward text
-        reward_text = self.font.render(f"Reward: {rewards[0]:.2f}", True, (255, 255, 255))
+        reward_val = extract_reward_value(rewards)
+        reward_text = self.font.render(f"Reward: {reward_val:.2f}", True, (255, 255, 255))
         self.screen.blit(reward_text, (10, clipped_y + 60))
 
         # Add reward to history
-        self.reward_history.append(float(rewards[0]))
+        self.reward_history.append(reward_val)
         if len(self.reward_history) > self.max_history:
             self.reward_history.pop(0)
 

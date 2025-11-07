@@ -26,8 +26,10 @@ from pufferlib_wrapper import make_vectorized_env
 from rl_utils import (
     CNNFeatureExtractor,
     EpisodeMetricsLogger,
+    VisualizationWindow,
     clip_action_to_space,
     extract_episode_metrics,
+    extract_lap_time_metrics,
     layer_init,
     prepare_observation,
     set_random_seeds,
@@ -76,6 +78,7 @@ class SACConfig:
     # Misc
     seed: int = 1
     torch_deterministic: bool = True
+    visualize: bool = False
 
 
 LOG_STD_MAX = 2
@@ -276,11 +279,22 @@ class SACTrainer:
         
         # Setup logging
         self.log_dir, self.model_dir = setup_logging_dirs(config.log_dir, config.model_dir)
+        print(f"TensorBoard log directory: {self.log_dir}")
         self.writer = SummaryWriter(self.log_dir)
         
         # Training state
         self.global_step = 0
         self.episode_metrics = EpisodeMetricsLogger()
+        
+        # Track last seen lap counts per environment to detect new laps
+        self.last_seen_lap_counts = [0] * config.num_envs
+        
+        # Setup visualization
+        self.visualize = config.visualize
+        self.visualizer = VisualizationWindow(
+            algorithm_name="SAC",
+            port=config.start_port
+        ) if config.visualize else None
     
     def collect_experience(self, obs, deterministic=False):
         """
@@ -298,6 +312,19 @@ class SACTrainer:
         # Step environment
         next_obs, reward, terminated, truncated, info = self.envs.step(action_np)
         done = np.logical_or(terminated, truncated)
+        
+        # Visualization (show first environment)
+        if self.visualize and self.visualizer is not None:
+            # Get observation from first env
+            vis_obs = obs[0] if self.config.num_envs > 1 else obs
+            vis_action = actions[0] if self.config.num_envs > 1 else actions
+            if hasattr(vis_action, 'cpu'):
+                vis_action = vis_action.cpu().numpy()
+            vis_clipped_action = action_np[0] if self.config.num_envs > 1 else action_np
+            vis_reward = reward[0] if isinstance(reward, (np.ndarray, list)) else reward
+            if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward):
+                # User closed window
+                self.visualize = False
         
         # Ensure all arrays are numpy arrays
         if not isinstance(obs, np.ndarray):
@@ -319,7 +346,20 @@ class SACTrainer:
                 done[i] if self.config.num_envs > 1 else done,
             )
         
-        # Extract episode metrics
+        # Check for new lap times and log immediately to TensorBoard
+        for idx in range(self.config.num_envs):
+            lap_metrics = extract_lap_time_metrics(info, idx)
+            if lap_metrics:
+                # Check if lap_count increased (new lap completed)
+                current_lap_count = lap_metrics.get("lap_count", 0)
+                if current_lap_count > self.last_seen_lap_counts[idx]:
+                    # New lap completed, log the lap time
+                    if "lap_time" in lap_metrics and lap_metrics["lap_time"] > 0.0:
+                        self.writer.add_scalar("laps/lap_time", lap_metrics["lap_time"], self.global_step)
+                        self.writer.flush()
+                    self.last_seen_lap_counts[idx] = current_lap_count
+        
+        # Extract episode metrics and reset lap count tracking on episode end
         metrics_list = []
         for i in range(self.config.num_envs):
             d = done[i] if self.config.num_envs > 1 else done
@@ -328,6 +368,9 @@ class SACTrainer:
             metrics = extract_episode_metrics(info, i, d)
             if metrics:
                 metrics_list.append(metrics)
+            # Reset lap count tracking when episode ends
+            if d:
+                self.last_seen_lap_counts[i] = 0
         
         return next_obs, metrics_list
     
@@ -443,6 +486,7 @@ class SACTrainer:
                     self.writer.add_scalar("losses/alpha", train_stats["alpha"], global_step)
                     if self.config.autotune:
                         self.writer.add_scalar("losses/alpha_loss", train_stats["alpha_loss"], global_step)
+                    self.writer.flush()
             
             # Periodic logging
             if global_step % 1000 == 0:
@@ -452,6 +496,7 @@ class SACTrainer:
                 # Log and reset episode metrics
                 if len(self.episode_metrics.episode_rewards) > 0:
                     self.episode_metrics.log_to_tensorboard(self.writer, global_step)
+                    self.writer.flush()
                     summary = self.episode_metrics.print_summary()
                     if summary:
                         print(summary)
@@ -489,6 +534,9 @@ class SACTrainer:
         print(f"\nSaved final model to {final_model_path}")
         
         self.envs.close()
+        if self.visualizer is not None:
+            self.visualizer.close()
+        self.writer.flush()
         self.writer.close()
         
         total_time = time.time() - start_time
@@ -512,6 +560,7 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.2)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--visualize", action="store_true", help="enable pygame visualization window during training")
     args = parser.parse_args()
     
     # Create config
@@ -530,6 +579,7 @@ def main():
         alpha=args.alpha,
         device=args.device,
         seed=args.seed,
+        visualize=args.visualize,
     )
     
     # Create trainer and train
