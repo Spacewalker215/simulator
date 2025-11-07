@@ -10,6 +10,7 @@ import sys
 sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
 
 import argparse
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -52,7 +53,8 @@ class PPOConfig:
     clip_vloss: bool = True
     
     # Logging
-    log_dir: str = "./output/pufferlib_runs"
+    log_dir: str = "./output/tensorboard"
+    model_dir: str = "./output/models"
     save_model_freq: int = 10  # Save every N updates
     
     # Device
@@ -261,6 +263,11 @@ class PPOTrainer:
         # Setup logging with readable timestamp
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.log_dir = f"{config.log_dir}/{timestamp}"
+        self.model_dir = f"{config.model_dir}/{timestamp}"
+        
+        # Create model directory
+        os.makedirs(self.model_dir, exist_ok=True)
+        
         self.writer = SummaryWriter(self.log_dir)
         
         # Training state
@@ -503,7 +510,8 @@ class PPOTrainer:
         print(f"Batch size: {self.batch_size}")
         print(f"Minibatch size: {self.minibatch_size}")
         print(f"Device: {self.device}")
-        print(f"Experiment name: {self.log_dir}")
+        print(f"Tensorboard logs: {self.log_dir}")
+        print(f"Model checkpoints: {self.model_dir}")
         print(f"{'='*60}\n")
         
         start_time = time.time()
@@ -597,7 +605,7 @@ class PPOTrainer:
             
             # Save model
             if update % self.config.save_model_freq == 0:
-                model_path = f"{self.log_dir}/ppo_donkey_update{update}.pt"
+                model_path = f"{self.model_dir}/ppo_donkey_update{update}.pt"
                 torch.save({
                     "update": update,
                     "global_step": self.global_step,
@@ -607,7 +615,7 @@ class PPOTrainer:
                 print(f"  Saved model to {model_path}")
         
         # Save final model
-        final_model_path = f"{self.log_dir}/ppo_donkey_final.pt"
+        final_model_path = f"{self.model_dir}/ppo_donkey_final.pt"
         torch.save({
             "update": self.update,
             "global_step": self.global_step,
