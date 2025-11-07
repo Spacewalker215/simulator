@@ -24,6 +24,7 @@ ExportedObj/
 *.csproj
 *.unityproj
 *.sln
+*.slnx
 *.suo
 *.tmp
 *.user
@@ -35,6 +36,7 @@ ExportedObj/
 *.mdb
 *.opendb
 *.VC.db
+unitylog.txt
 
 # Unity3D generated meta files
 *.pidb.meta
@@ -64,7 +66,12 @@ dataset
 /camera_a.png
 /camera_b.png
 /simulator/unity/Builds
+/simulator/build
 /src/camera_a.png
 /src/camera_b.png
 /simulator/unity/Assets/StreamingAssets
 /simulator/unity/Assets/AssetBundles
+
+# Model outputs
+wandb/
+output/
