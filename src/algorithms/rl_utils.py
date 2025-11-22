@@ -124,6 +124,16 @@ def extract_lap_time_metrics(info, idx):
     """
     metrics = {}
     
+    # Handle list of dicts (PufferLib)
+    if isinstance(info, list):
+        if idx < len(info):
+            env_info = info[idx]
+            if "last_lap_time" in env_info and env_info["last_lap_time"] > 0.0:
+                metrics["lap_time"] = env_info["last_lap_time"]
+            if "lap_count" in env_info:
+                metrics["lap_count"] = env_info["lap_count"]
+        return metrics if metrics else None
+    
     if isinstance(info, dict):
         # Lap metrics - check for new lap time
         if "last_lap_time" in info:
@@ -147,6 +157,39 @@ def extract_episode_metrics(info, idx, done):
     
     if not done:
         return None
+    
+    # Handle list of dicts (PufferLib)
+    if isinstance(info, list):
+        if idx < len(info):
+            env_info = info[idx]
+            
+            if "episode" in env_info:
+                metrics["reward"] = env_info["episode"]["r"]
+                metrics["length"] = env_info["episode"]["l"]
+            
+            # Cross track error
+            if "cte" in env_info:
+                metrics["cte"] = abs(env_info["cte"])
+            
+            # Speed metrics
+            if "speed" in env_info:
+                metrics["speed"] = env_info["speed"]
+            
+            if "forward_vel" in env_info:
+                metrics["forward_vel"] = env_info["forward_vel"]
+            
+            # Collision detection
+            if "hit" in env_info:
+                metrics["hit"] = 1.0 if env_info["hit"] != "none" else 0.0
+            
+            # Lap metrics
+            if "last_lap_time" in env_info and env_info["last_lap_time"] > 0.0:
+                metrics["lap_time"] = env_info["last_lap_time"]
+            
+            if "lap_count" in env_info:
+                metrics["lap_count"] = env_info["lap_count"]
+                
+        return metrics if metrics else None
     
     if "episode" in info:
         ep_info = info["episode"][idx]

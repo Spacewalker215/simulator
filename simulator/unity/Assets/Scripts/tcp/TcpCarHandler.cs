@@ -44,10 +44,10 @@ namespace tk
         int iActiveSpan = 0;
 
         float time_step = 0.1f;
-    bool bResetCar = false;
-    // If true the simulation runs in asynchronous mode (normal Unity time).
-    // If false the simulation runs in synchronous (step) mode and Time.timeScale
-    // is set to 0.0 so the client can step the simulation manually.
+        bool bResetCar = false;
+        // If true the simulation runs in asynchronous mode (normal Unity time).
+        // If false the simulation runs in synchronous (step) mode and Time.timeScale
+        // is set to 0.0 so the client can step the simulation manually.
         bool bExitScene = false;
 
         public enum State

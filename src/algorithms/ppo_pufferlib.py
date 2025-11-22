@@ -591,6 +591,54 @@ class PPOTrainer:
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action_np)
             done = np.logical_or(terminated, truncated)
             
+            # Check if any environment is done (episode ended/car reset)
+            if np.any(done):
+                # Log episode metrics and check for completion
+                for idx, d in enumerate(done):
+                    if d:
+                        metrics = extract_episode_metrics(info, idx, d)
+                        if metrics:
+                            episode_metrics.add_metrics(metrics)
+                            episode_count += 1
+                            
+                            # Print detailed episode summary
+                            print(f"\n{'='*60}")
+                            print(f"Episode {episode_count}/{self.config.num_episodes} Complete")
+                            print(f"{'='*60}")
+                            
+                            # Core metrics
+                            if 'reward' in metrics:
+                                print(f"  Return: {metrics['reward']:.2f}")
+                            if 'length' in metrics:
+                                print(f"  Length: {metrics['length']} steps")
+                            
+                            # Lap metrics
+                            if 'lap_count' in metrics:
+                                print(f"  Laps Completed: {metrics['lap_count']}")
+                            if 'lap_time' in metrics:
+                                print(f"  Last Lap Time: {metrics['lap_time']:.2f}s")
+                            
+                            # Driving performance
+                            if 'cte' in metrics:
+                                print(f"  Avg Cross-Track Error: {metrics['cte']:.3f}")
+                            if 'speed' in metrics:
+                                print(f"  Avg Speed: {metrics['speed']:.2f}")
+                            if 'forward_vel' in metrics:
+                                print(f"  Avg Forward Velocity: {metrics['forward_vel']:.2f}")
+                            if 'hit' in metrics:
+                                collision_status = "Yes" if metrics['hit'] > 0 else "No"
+                                print(f"  Collision: {collision_status}")
+                            
+                            print(f"{'='*60}\n")
+                            
+                            # Check if we've completed all episodes
+                            if episode_count >= self.config.num_episodes:
+                                break
+                
+                # Break if all requested episodes are done
+                if episode_count >= self.config.num_episodes:
+                    break
+
             # Visualization (show first environment)
             if self.visualize and self.visualizer is not None:
                 vis_obs = obs[0] if self.config.num_envs > 1 else obs
@@ -606,52 +654,6 @@ class PPOTrainer:
             
             # Update observation - vectorized envs auto-reset, so next_obs_np contains reset obs for done envs
             obs = prepare_observation(next_obs_np, self.device)
-            
-            # Log episode metrics after updating observation
-            for idx, d in enumerate(done):
-                if d:
-                    metrics = extract_episode_metrics(info, idx, d)
-                    if metrics:
-                        episode_metrics.add_metrics(metrics)
-                        episode_count += 1
-                        
-                        # Print detailed episode summary
-                        print(f"\n{'='*60}")
-                        print(f"Episode {episode_count}/{self.config.num_episodes} Complete")
-                        print(f"{'='*60}")
-                        
-                        # Core metrics
-                        if 'reward' in metrics:
-                            print(f"  Return: {metrics['reward']:.2f}")
-                        if 'length' in metrics:
-                            print(f"  Length: {metrics['length']} steps")
-                        
-                        # Lap metrics
-                        if 'lap_count' in metrics:
-                            print(f"  Laps Completed: {metrics['lap_count']}")
-                        if 'lap_time' in metrics:
-                            print(f"  Last Lap Time: {metrics['lap_time']:.2f}s")
-                        
-                        # Driving performance
-                        if 'cte' in metrics:
-                            print(f"  Avg Cross-Track Error: {metrics['cte']:.3f}")
-                        if 'speed' in metrics:
-                            print(f"  Avg Speed: {metrics['speed']:.2f}")
-                        if 'forward_vel' in metrics:
-                            print(f"  Avg Forward Velocity: {metrics['forward_vel']:.2f}")
-                        if 'hit' in metrics:
-                            collision_status = "Yes" if metrics['hit'] > 0 else "No"
-                            print(f"  Collision: {collision_status}")
-                        
-                        print(f"{'='*60}\n")
-                        
-                        # Check if we've completed all episodes
-                        if episode_count >= self.config.num_episodes:
-                            break
-            
-            # Break if all requested episodes are done
-            if episode_count >= self.config.num_episodes:
-                break
         
         # Print final summary
         total_time = time.time() - start_time

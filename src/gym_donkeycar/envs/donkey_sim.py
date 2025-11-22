@@ -580,6 +580,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
 
         if "hit" in message:
             self.hit = message["hit"]
+            if self.hit != "none":
+                logger.info(f"Hit detected: {self.hit}")
 
         self.determine_episode_over()
 
@@ -648,7 +650,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
 
     def on_car_reset_done(self, message: Dict[str, Any]) -> None:
         """Handle confirmation that car reset is complete"""
-        logger.debug("car reset complete")
+        logger.info("car reset complete (msg received)")
         self.reset_complete = True
 
     def on_recv_scene_names(self, message: Dict[str, Any]) -> None:
