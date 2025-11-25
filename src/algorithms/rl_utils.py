@@ -648,11 +648,26 @@ class VisualizationWindow:
     def __init__(self, algorithm_name="RL", port=None):
         pygame.init()
         self.font = pygame.font.SysFont(None, 24)
+        self.small_font = pygame.font.SysFont(None, 18)
         self.initialized = False
         self.reward_history = []
         self.max_history = 200
         self.algorithm_name = algorithm_name
         self.port = port
+        
+        # UI dimensions
+        self.ui_height = 540
+        self.scaled_w = 0
+        self.scaled_h = 0
+        
+        # Track individual reward components
+        self.component_history = {
+            "speed_reward": [],
+            "centering_bonus": [],
+            "done_penalty": [],
+            "off_track_penalty": [],
+            "collision_penalty": [],
+        }
     
     def update(self, obs, action, clipped_action, reward, diagnostic_data=None):
         """
@@ -682,10 +697,13 @@ class VisualizationWindow:
         # Setup window dimensions
         w, h = obs_img.shape[:2]
         scale_factor = 4
-        scaled_w, scaled_h = w * scale_factor, h * scale_factor
+        self.scaled_w, self.scaled_h = w * scale_factor, h * scale_factor
+        
+        # UI layout: actions (150px) + diagnostics (150px) + component plots (240px)
+        # Use instance variable ui_height
         
         if not self.initialized:
-            self.screen = pygame.display.set_mode((scaled_w, scaled_h + 200))
+            self.screen = pygame.display.set_mode((self.scaled_w, self.scaled_h + self.ui_height))
             # Set window title with algorithm name and port
             title_parts = [self.algorithm_name]
             if self.port is not None:
@@ -695,14 +713,14 @@ class VisualizationWindow:
         
         # Display observation
         surface = pygame.surfarray.make_surface(obs_img)
-        scaled_surface = pygame.transform.scale(surface, (scaled_w, scaled_h))
+        scaled_surface = pygame.transform.scale(surface, (self.scaled_w, self.scaled_h))
         self.screen.blit(scaled_surface, (0, 0))
         
         # Clear UI area
-        pygame.draw.rect(self.screen, (0, 0, 0), (0, scaled_h, scaled_w, 200))
+        pygame.draw.rect(self.screen, (0, 0, 0), (0, self.scaled_h, self.scaled_w, self.ui_height))
         
         # Draw UI elements
-        bar_y = scaled_h + 10
+        bar_y = self.scaled_h + 10
         bar_width = 150
         bar_height = 20
         label_x = 10
@@ -865,25 +883,41 @@ class VisualizationWindow:
                 flag_surf = self.font.render(flag_text, True, flag_color)
                 self.screen.blit(flag_surf, (label_x, flag_y))
             
-            # Reward components
+            # Reward components - display current values
             reward_comp = diagnostic_data.get("reward_components", {})
             if reward_comp:
                 comp_y = flag_y + 25
                 comp_texts = [
                     f"Speed: {reward_comp.get('speed_reward', 0.0):.2f}",
                     f"Center: {reward_comp.get('centering_bonus', 0.0):.2f}",
+                    f"Done: {reward_comp.get('done_penalty', 0.0):.2f}",
+                    f"OffTrack: {reward_comp.get('off_track_penalty', 0.0):.2f}",
                 ]
                 for i, text in enumerate(comp_texts):
                     comp_surf = self.font.render(text, True, (100, 200, 100))
-                    self.screen.blit(comp_surf, (label_x + i * 200, comp_y))
+                    self.screen.blit(comp_surf, (label_x + (i % 2) * 200, comp_y + (i // 2) * 25))
+            
+            # Update component history
+            for key in self.component_history.keys():
+                value = reward_comp.get(key, 0.0)
+                self.component_history[key].append(value)
+                if len(self.component_history[key]) > self.max_history:
+                    self.component_history[key].pop(0)
+        else:
+            # If no diagnostic data, append zeros to maintain history length
+            for key in self.component_history.keys():
+                self.component_history[key].append(0.0)
+                if len(self.component_history[key]) > self.max_history:
+                    self.component_history[key].pop(0)
         
         # Update reward history
         self.reward_history.append(reward_val)
         if len(self.reward_history) > self.max_history:
             self.reward_history.pop(0)
         
-        # Draw reward plot
-        self._draw_reward_plot(scaled_w, scaled_h + 200)
+        # Draw plots
+        self._draw_reward_plot(self.scaled_w, self.scaled_h + self.ui_height)
+        self._draw_reward_components_plot(self.scaled_w, self.scaled_h + self.ui_height)
         
         pygame.display.flip()
         
@@ -903,7 +937,8 @@ class VisualizationWindow:
         plot_width = 240
         plot_height = 120
         plot_x = screen_width - plot_width - 10
-        plot_y = screen_height - plot_height - 10
+        # Position at top of UI area (UI starts at screen_height - ui_height)
+        plot_y = screen_height - self.ui_height + 10
         
         # Draw plot background
         pygame.draw.rect(self.screen, (40, 40, 40), (plot_x, plot_y, plot_width, plot_height))
@@ -929,12 +964,91 @@ class VisualizationWindow:
             pygame.draw.line(self.screen, (255, 255, 0), (x1, y1), (x2, y2), 2)
         
         # Draw labels
-        title = self.font.render("Reward", True, (255, 255, 255))
+        title = self.font.render("Total Reward", True, (255, 255, 255))
         self.screen.blit(title, (plot_x + 5, plot_y - 25))
-        min_text = self.font.render(f"Min: {min_reward:.2f}", True, (150, 150, 150))
+        min_text = self.small_font.render(f"Min: {min_reward:.2f}", True, (150, 150, 150))
         self.screen.blit(min_text, (plot_x + 5, plot_y + plot_height + 5))
-        max_text = self.font.render(f"Max: {max_reward:.2f}", True, (150, 150, 150))
+        max_text = self.small_font.render(f"Max: {max_reward:.2f}", True, (150, 150, 150))
         self.screen.blit(max_text, (plot_x + 5, plot_y + plot_height + 25))
+    
+    def _draw_reward_components_plot(self, screen_width, screen_height):
+        """Draw individual reward component plots"""
+        # Skip if not enough data
+        if len(self.reward_history) < 2:
+            return
+        
+        # Plot configuration - bottom row dedicated to component plots
+        plot_width = 160
+        plot_height = 70
+        plot_spacing = 15
+        # Center the plots horizontally
+        total_width_needed = 3 * plot_width + 2 * plot_spacing
+        start_x = (screen_width - total_width_needed) // 2
+        # Position at very bottom with margin
+        start_y = screen_height - plot_height - 10
+        
+        # Component configurations: (key, label, color)
+        components = [
+            ("speed_reward", "Speed Reward", (0, 255, 100)),
+            ("centering_bonus", "Centering Bonus", (100, 150, 255)),
+            ("done_penalty", "Done Penalty", (255, 100, 100)),
+            ("off_track_penalty", "Off-Track Penalty", (255, 150, 0)),
+            ("collision_penalty", "Collision Penalty", (255, 0, 0)),
+        ]
+        
+        # Draw each component plot
+        for idx, (key, label, color) in enumerate(components):
+            history = self.component_history[key]
+            if len(history) < 2:
+                continue
+            
+            # Calculate position (3 columns, 2 rows)
+            col = idx % 3
+            row = idx // 3
+            plot_x = start_x + col * (plot_width + plot_spacing)
+            plot_y = start_y - row * (plot_height + 40)
+            
+            # Draw plot background
+            pygame.draw.rect(self.screen, (30, 30, 30), (plot_x, plot_y, plot_width, plot_height))
+            pygame.draw.rect(self.screen, (80, 80, 80), (plot_x, plot_y, plot_width, plot_height), 1)
+            
+            # Draw grid lines
+            for i in range(3):
+                y = plot_y + (plot_height * i) // 2
+                pygame.draw.line(self.screen, (50, 50, 50), (plot_x, y), (plot_x + plot_width, y), 1)
+            
+            # Calculate scaling
+            history_array = np.array(history)
+            min_val = history_array.min()
+            max_val = history_array.max()
+            val_range = max_val - min_val if max_val > min_val else 1
+            
+            # Draw zero line if range includes both positive and negative
+            if min_val < 0 and max_val > 0:
+                zero_y = plot_y + plot_height - ((-min_val) / val_range * plot_height)
+                pygame.draw.line(self.screen, (100, 100, 100), (plot_x, zero_y), (plot_x + plot_width, zero_y), 1)
+            
+            # Draw component line
+            for i in range(len(history) - 1):
+                y1 = plot_y + plot_height - ((history[i] - min_val) / val_range * plot_height)
+                y2 = plot_y + plot_height - ((history[i + 1] - min_val) / val_range * plot_height)
+                x1 = plot_x + (i / max(len(history) - 1, 1)) * plot_width
+                x2 = plot_x + ((i + 1) / max(len(history) - 1, 1)) * plot_width
+                pygame.draw.line(self.screen, color, (x1, y1), (x2, y2), 2)
+            
+            # Draw labels
+            title = self.small_font.render(label, True, color)
+            self.screen.blit(title, (plot_x + 3, plot_y - 18))
+            
+            # Current value
+            current_val = history[-1] if history else 0.0
+            current_text = self.small_font.render(f"{current_val:.2f}", True, (200, 200, 200))
+            self.screen.blit(current_text, (plot_x + plot_width - 45, plot_y - 18))
+            
+            # Min/max values (smaller font)
+            if abs(min_val) > 0.01 or abs(max_val) > 0.01:
+                range_text = self.small_font.render(f"[{min_val:.2f}, {max_val:.2f}]", True, (120, 120, 120))
+                self.screen.blit(range_text, (plot_x + 3, plot_y + plot_height + 3))
     
     def close(self):
         """Close the visualization window"""

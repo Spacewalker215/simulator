@@ -37,6 +37,7 @@ def supply_defaults(conf: Dict[str, Any]) -> None:
         ("steer_limit", 1.0),
         ("throttle_min", 0.0),
         ("throttle_max", 1.0),
+        ("max_speed", float('inf')),  # Maximum speed in m/s (default: no limit)
     ]
 
     for key, val in defaults:

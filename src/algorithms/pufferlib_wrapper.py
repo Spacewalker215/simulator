@@ -148,7 +148,7 @@ def make_vectorized_env(
                     "guid": str(uuid.uuid4()),
                     "max_cte": env_config.get("max_cte", 10),
                     "frame_skip": env_config.get("frame_skip", 1),
-                    "max_speed": 2.0,
+                    "max_speed": env_config.get("max_speed", float('inf')),  # Default to no limit
                     "policy_name": policy_name,  # Pass policy name to start_sim
                 }
                 # Use start_sim to launch simulator and create environment

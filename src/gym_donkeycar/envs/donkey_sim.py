@@ -129,6 +129,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.SceneToLoad = conf["level"]
         self.loaded = False
         self.max_cte = conf["max_cte"]
+        self.max_speed = conf.get("max_speed", float('inf'))  # Maximum speed limit in m/s
         self.timer = FPSTimer()
 
         # sensor size - height, width, depth
@@ -386,7 +387,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
                 conf["body_rgb"],
                 conf["car_name"],
                 conf["font_size"],
-                conf.get("max_speed", 2.0),  # Default to 10.0 if not specified
+                conf.get("max_speed", 30.0),  # Default to 30.0 m/s if not specified
             )
 
     def set_racer_bio(self, conf: Dict[str, Any]) -> None:
@@ -479,7 +480,16 @@ class DonkeyUnitySimHandler(IMesgHandler):
         return self.camera_img_size
 
     def take_action(self, action: np.ndarray) -> None:
-        self.send_control(action[0], action[1])
+        steer = action[0]
+        throttle = action[1]
+        
+        # Apply speed limiting if max_speed is set
+        if self.max_speed < float('inf') and self.speed > self.max_speed:
+            # If current speed exceeds limit, reduce throttle to zero
+            # This prevents acceleration beyond the speed limit
+            throttle = 0.0
+        
+        self.send_control(steer, throttle)
 
     def observe(self) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         while self.last_received == self.time_received:
@@ -822,12 +832,13 @@ class DonkeyUnitySimHandler(IMesgHandler):
         body_rgb: Tuple[int, int, int] = (255, 255, 255),
         car_name: str = "car",
         font_size: int = 100,
-        max_speed: float = 2.0,
+        max_speed: float = 30.0,
     ):
         """
         # body_style = "donkey" | "bare" | "car01" | "f1" | "cybertruck"
         # body_rgb  = (128, 128, 128) tuple of ints
         # car_name = "string less than 64 char"
+        # max_speed = maximum speed in m/s (default 30.0)
         """
         assert isinstance(body_style, str)
         assert isinstance(body_rgb, list) or isinstance(body_rgb, tuple)

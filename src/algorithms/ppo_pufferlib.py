@@ -47,6 +47,16 @@ class PPOConfig:
     max_cte: float = 2.0  # Maximum cross-track error before termination (lower = stricter)
     frame_skip: int = 1  # Number of frames to skip between actions
     
+    # Curriculum Learning
+    curriculum_learning: bool = False  # Enable curriculum learning for speed
+    curriculum_initial_speed: float = 0.25  # Initial max speed (m/s)
+    curriculum_target_speed: float = 3.0  # Target max speed (m/s)
+    curriculum_speed_increment: float = 0.1  # Speed increase per success
+    curriculum_speed_decrement: float = 0.05  # Speed decrease per failure
+    curriculum_success_threshold: int = 3  # Consecutive laps needed to increase speed
+    curriculum_failure_threshold: int = 5  # Failed episodes before decreasing speed
+    curriculum_min_lap_time: float = 30.0  # Minimum lap time to count as success (seconds)
+    
     # Training
     total_timesteps: int = 1000000
     learning_rate: float = 3e-4
@@ -141,6 +151,121 @@ class CNNActorCritic(nn.Module):
         return action, log_prob, entropy, value
 
 
+class CurriculumManager:
+    """Manages curriculum learning for speed adjustment"""
+    
+    def __init__(self, config: PPOConfig):
+        self.config = config
+        self.enabled = config.curriculum_learning
+        
+        if not self.enabled:
+            return
+        
+        # Current speed limit
+        self.current_max_speed = config.curriculum_initial_speed
+        
+        # Performance tracking
+        self.consecutive_successes = 0
+        self.consecutive_failures = 0
+        self.recent_episodes = []  # Track recent episode outcomes
+        self.total_laps_completed = 0
+        
+        print(f"\nCurriculum Learning Enabled:")
+        print(f"  Initial max speed: {self.current_max_speed:.2f} m/s")
+        print(f"  Target max speed: {config.curriculum_target_speed:.2f} m/s")
+        print(f"  Success threshold: {config.curriculum_success_threshold} consecutive laps")
+        print(f"  Failure threshold: {config.curriculum_failure_threshold} failed episodes")
+    
+    def get_max_speed(self) -> float:
+        """Get current maximum speed limit"""
+        if not self.enabled:
+            return float('inf')  # No limit
+        return self.current_max_speed
+    
+    def update(self, lap_count: int, lap_time: float, episode_length: int) -> dict:
+        """Update curriculum based on episode outcome
+        
+        Returns:
+            dict: Status information about curriculum changes
+        """
+        if not self.enabled:
+            return {}
+        
+        status = {
+            'speed_changed': False,
+            'old_speed': self.current_max_speed,
+            'new_speed': self.current_max_speed,
+            'reason': ''
+        }
+        
+        # Determine if episode was successful
+        # Success = completed at least 1 lap with reasonable lap time
+        is_success = (
+            lap_count > 0 and 
+            lap_time >= self.config.curriculum_min_lap_time and
+            lap_time < 300.0  # Reasonable upper bound
+        )
+        
+        self.recent_episodes.append(is_success)
+        if len(self.recent_episodes) > 20:  # Keep last 20 episodes
+            self.recent_episodes.pop(0)
+        
+        if is_success:
+            self.total_laps_completed += lap_count
+            self.consecutive_successes += 1
+            self.consecutive_failures = 0
+            
+            # Check if we should increase speed
+            if self.consecutive_successes >= self.config.curriculum_success_threshold:
+                if self.current_max_speed < self.config.curriculum_target_speed:
+                    old_speed = self.current_max_speed
+                    self.current_max_speed = min(
+                        self.current_max_speed + self.config.curriculum_speed_increment,
+                        self.config.curriculum_target_speed
+                    )
+                    status['speed_changed'] = True
+                    status['old_speed'] = old_speed
+                    status['new_speed'] = self.current_max_speed
+                    status['reason'] = f'{self.consecutive_successes} consecutive successful laps'
+                    self.consecutive_successes = 0  # Reset counter
+        else:
+            self.consecutive_failures += 1
+            self.consecutive_successes = 0
+            
+            # Check if we should decrease speed
+            if self.consecutive_failures >= self.config.curriculum_failure_threshold:
+                if self.current_max_speed > self.config.curriculum_initial_speed:
+                    old_speed = self.current_max_speed
+                    self.current_max_speed = max(
+                        self.current_max_speed - self.config.curriculum_speed_decrement,
+                        self.config.curriculum_initial_speed
+                    )
+                    status['speed_changed'] = True
+                    status['old_speed'] = old_speed
+                    status['new_speed'] = self.current_max_speed
+                    status['reason'] = f'{self.consecutive_failures} consecutive failures'
+                    self.consecutive_failures = 0  # Reset counter
+        
+        return status
+    
+    def get_stats(self) -> dict:
+        """Get curriculum statistics"""
+        if not self.enabled:
+            return {}
+        
+        success_rate = 0.0
+        if len(self.recent_episodes) > 0:
+            success_rate = sum(self.recent_episodes) / len(self.recent_episodes)
+        
+        return {
+            'current_max_speed': self.current_max_speed,
+            'consecutive_successes': self.consecutive_successes,
+            'consecutive_failures': self.consecutive_failures,
+            'recent_success_rate': success_rate,
+            'total_laps_completed': self.total_laps_completed,
+        }
+
+
 class RolloutBuffer:
     """Buffer for storing rollout data"""
     def __init__(self, num_steps, num_envs, obs_shape, action_shape, device):
@@ -204,12 +329,19 @@ class PPOTrainer:
         # Setup device
         self.device = torch.device(config.device)
         
+        # Create curriculum manager
+        self.curriculum = CurriculumManager(config)
+        
         # Create vectorized environment
         print(f"Creating {config.num_envs} parallel environments...")
         env_config = {
             "max_cte": config.max_cte,
             "frame_skip": config.frame_skip,
         }
+        # Add max_speed to env_config if curriculum learning is enabled
+        if config.curriculum_learning:
+            env_config["max_speed"] = self.curriculum.get_max_speed()
+        
         self.envs = make_vectorized_env(
             env_name=config.env_name,
             num_envs=config.num_envs,
@@ -354,6 +486,25 @@ class PPOTrainer:
                     metrics = extract_episode_metrics(info, idx, d)
                     if metrics:
                         self.episode_metrics.add_metrics(metrics)
+                        
+                        # Update curriculum based on episode outcome
+                        if self.config.curriculum_learning:
+                            lap_count = metrics.get('lap_count', 0)
+                            lap_time = metrics.get('lap_time', 0.0)
+                            episode_length = metrics.get('length', 0)
+                            
+                            curriculum_status = self.curriculum.update(lap_count, lap_time, episode_length)
+                            
+                            # If speed changed, update environment configuration
+                            if curriculum_status.get('speed_changed', False):
+                                new_speed = curriculum_status['new_speed']
+                                print(f"\n[Curriculum] Speed adjusted: {curriculum_status['old_speed']:.2f} -> {new_speed:.2f} m/s")
+                                print(f"[Curriculum] Reason: {curriculum_status['reason']}")
+                                
+                                # Note: We can't directly update running environments' max_speed,
+                                # but the change will take effect on next episode reset
+                                # For now, we'll log it and environments will get updated on reset
+                    
                     # Reset lap count tracking when episode ends
                     self.last_seen_lap_counts[idx] = 0
         
@@ -497,6 +648,15 @@ class PPOTrainer:
             self.writer.add_scalar("losses/clipfrac", train_stats["clipfrac"], self.global_step)
             self.writer.add_scalar("losses/explained_variance", train_stats["explained_variance"], self.global_step)
             
+            # Log curriculum learning stats
+            if self.config.curriculum_learning:
+                curriculum_stats = self.curriculum.get_stats()
+                self.writer.add_scalar("curriculum/max_speed", curriculum_stats['current_max_speed'], self.global_step)
+                self.writer.add_scalar("curriculum/consecutive_successes", curriculum_stats['consecutive_successes'], self.global_step)
+                self.writer.add_scalar("curriculum/consecutive_failures", curriculum_stats['consecutive_failures'], self.global_step)
+                self.writer.add_scalar("curriculum/recent_success_rate", curriculum_stats['recent_success_rate'], self.global_step)
+                self.writer.add_scalar("curriculum/total_laps_completed", curriculum_stats['total_laps_completed'], self.global_step)
+            
             # Flush to ensure data is written to disk
             self.writer.flush()
             
@@ -512,6 +672,13 @@ class PPOTrainer:
             # Print training stats
             print(f"  PG Loss: {train_stats['pg_loss']:.4f} | V Loss: {train_stats['v_loss']:.4f}")
             print(f"  Entropy: {train_stats['entropy_loss']:.4f} | KL: {train_stats['approx_kl']:.4f}")
+            
+            # Print curriculum stats
+            if self.config.curriculum_learning:
+                curriculum_stats = self.curriculum.get_stats()
+                print(f"  [Curriculum] Max Speed: {curriculum_stats['current_max_speed']:.2f} m/s | "
+                      f"Success Rate: {curriculum_stats['recent_success_rate']:.1%} | "
+                      f"Total Laps: {curriculum_stats['total_laps_completed']}")
             
             # Reset episode metrics for next update
             self.episode_metrics.reset()
@@ -760,6 +927,16 @@ def main():
     parser.add_argument("--max-cte", type=float, default=2.0, help="maximum cross-track error before termination (lower = stricter)")
     parser.add_argument("--frame-skip", type=int, default=1, help="number of frames to skip between actions")
     
+    # Curriculum Learning
+    parser.add_argument("--curriculum-learning", action="store_true", help="enable curriculum learning for speed")
+    parser.add_argument("--curriculum-initial-speed", type=float, default=0.25, help="initial max speed for curriculum (m/s)")
+    parser.add_argument("--curriculum-target-speed", type=float, default=3.0, help="target max speed for curriculum (m/s)")
+    parser.add_argument("--curriculum-speed-increment", type=float, default=0.1, help="speed increase per success")
+    parser.add_argument("--curriculum-speed-decrement", type=float, default=0.05, help="speed decrease per failure")
+    parser.add_argument("--curriculum-success-threshold", type=int, default=3, help="consecutive laps needed to increase speed")
+    parser.add_argument("--curriculum-failure-threshold", type=int, default=5, help="failed episodes before decreasing speed")
+    parser.add_argument("--curriculum-min-lap-time", type=float, default=30.0, help="minimum lap time to count as success (seconds)")
+    
     # Training
     parser.add_argument("--total-timesteps", type=int, default=1000000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -798,6 +975,14 @@ def main():
         model_path=args.model_path,
         num_episodes=args.num_episodes,
         deterministic=args.deterministic,
+        curriculum_learning=args.curriculum_learning,
+        curriculum_initial_speed=args.curriculum_initial_speed,
+        curriculum_target_speed=args.curriculum_target_speed,
+        curriculum_speed_increment=args.curriculum_speed_increment,
+        curriculum_speed_decrement=args.curriculum_speed_decrement,
+        curriculum_success_threshold=args.curriculum_success_threshold,
+        curriculum_failure_threshold=args.curriculum_failure_threshold,
+        curriculum_min_lap_time=args.curriculum_min_lap_time,
     )
     
     # Create trainer
