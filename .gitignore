@@ -71,6 +71,7 @@ dataset
 /src/camera_b.png
 /simulator/unity/Assets/StreamingAssets
 /simulator/unity/Assets/AssetBundles
+*.egg-info*
 
 # Model outputs
 wandb/

@@ -305,7 +305,12 @@ class PPOTrainer:
                 vis_action = action[0] if self.config.num_envs > 1 else action
                 vis_clipped_action = action_np[0] if self.config.num_envs > 1 else action_np
                 vis_reward = reward[0] if isinstance(reward, (np.ndarray, list)) else reward
-                if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward):
+                
+                # Extract diagnostic data from first environment
+                from rl_utils import extract_step_data
+                vis_diag = extract_step_data(info, 0) if info else None
+                
+                if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward, vis_diag):
                     # User closed window
                     self.visualize = False
             
@@ -647,7 +652,12 @@ class PPOTrainer:
                 vis_action = action[0] if self.config.num_envs > 1 else action
                 vis_clipped_action = action_np[0] if self.config.num_envs > 1 else action_np
                 vis_reward = reward[0] if isinstance(reward, (np.ndarray, list)) else reward
-                if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward):
+                
+                # Extract diagnostic data from first environment
+                from rl_utils import extract_step_data
+                vis_diag = extract_step_data(info, 0) if info else None
+                
+                if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward, vis_diag):
                     # User closed window
                     print("\nVisualization window closed. Stopping playback.")
                     break

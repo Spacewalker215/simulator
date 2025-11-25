@@ -182,6 +182,20 @@ def extract_episode_metrics(info, idx, done):
             if "hit" in env_info:
                 metrics["hit"] = 1.0 if env_info["hit"] != "none" else 0.0
             
+            # Termination info
+            if "termination_reason" in env_info:
+                metrics["termination_reason"] = env_info["termination_reason"]
+            if "off_track" in env_info:
+                metrics["off_track"] = env_info["off_track"]
+            if "collision" in env_info:
+                metrics["collision"] = env_info["collision"]
+            if "car_fully_crossed" in env_info:
+                metrics["car_fully_crossed"] = env_info["car_fully_crossed"]
+            
+            # Reward components
+            if "reward_components" in env_info:
+                metrics["reward_components"] = env_info["reward_components"]
+            
             # Lap metrics
             if "last_lap_time" in env_info and env_info["last_lap_time"] > 0.0:
                 metrics["lap_time"] = env_info["last_lap_time"]
@@ -216,6 +230,25 @@ def extract_episode_metrics(info, idx, done):
             hit_val = info["hit"][idx] if hasattr(info["hit"], "__getitem__") else info["hit"]
             metrics["hit"] = 1.0 if hit_val != "none" else 0.0
         
+        # Termination info
+        if "termination_reason" in info:
+            term_val = info["termination_reason"][idx] if hasattr(info["termination_reason"], "__getitem__") else info["termination_reason"]
+            metrics["termination_reason"] = term_val
+        if "off_track" in info:
+            off_val = info["off_track"][idx] if hasattr(info["off_track"], "__getitem__") else info["off_track"]
+            metrics["off_track"] = off_val
+        if "collision" in info:
+            coll_val = info["collision"][idx] if hasattr(info["collision"], "__getitem__") else info["collision"]
+            metrics["collision"] = coll_val
+        if "car_fully_crossed" in info:
+            cross_val = info["car_fully_crossed"][idx] if hasattr(info["car_fully_crossed"], "__getitem__") else info["car_fully_crossed"]
+            metrics["car_fully_crossed"] = cross_val
+        
+        # Reward components
+        if "reward_components" in info:
+            reward_comp = info["reward_components"][idx] if hasattr(info["reward_components"], "__getitem__") else info["reward_components"]
+            metrics["reward_components"] = reward_comp
+        
         # Lap metrics
         if "last_lap_time" in info:
             lap_time = info["last_lap_time"][idx] if hasattr(info["last_lap_time"], "__getitem__") else info["last_lap_time"]
@@ -227,6 +260,122 @@ def extract_episode_metrics(info, idx, done):
             metrics["lap_count"] = lap_count
     
     return metrics if metrics else None
+
+
+def extract_termination_and_reward_info(info, idx):
+    """
+    Extract termination reason and reward components from info dict.
+    
+    Returns dict with:
+    - termination_reason: string explaining why episode ended
+    - off_track: boolean
+    - collision: boolean
+    - car_fully_crossed: boolean
+    - reward_components: dict with breakdown of reward calculation
+    """
+    term_info = {
+        "termination_reason": "none",
+        "off_track": False,
+        "collision": False,
+        "car_fully_crossed": False,
+        "reward_components": {},
+    }
+    
+    # Handle list of dicts (PufferLib vectorized env)
+    if isinstance(info, list):
+        if idx < len(info):
+            env_info = info[idx]
+            
+            if "termination_reason" in env_info:
+                term_info["termination_reason"] = env_info["termination_reason"]
+            if "off_track" in env_info:
+                term_info["off_track"] = env_info["off_track"]
+            if "collision" in env_info:
+                term_info["collision"] = env_info["collision"]
+            if "car_fully_crossed" in env_info:
+                term_info["car_fully_crossed"] = env_info["car_fully_crossed"]
+            if "reward_components" in env_info:
+                term_info["reward_components"] = env_info["reward_components"]
+    
+    # Handle dict (single env)
+    elif isinstance(info, dict):
+        if "termination_reason" in info:
+            term_info["termination_reason"] = info["termination_reason"]
+        if "off_track" in info:
+            term_info["off_track"] = info["off_track"]
+        if "collision" in info:
+            term_info["collision"] = info["collision"]
+        if "car_fully_crossed" in info:
+            term_info["car_fully_crossed"] = info["car_fully_crossed"]
+        if "reward_components" in info:
+            term_info["reward_components"] = info["reward_components"]
+    
+    return term_info
+
+
+def extract_step_data(info, idx):
+    """
+    Extract current step data (both termination and reward info).
+    
+    Returns dict with all available diagnostic data for logging.
+    """
+    step_data = {
+        "cte": None,
+        "speed": None,
+        "forward_vel": None,
+        "hit": "none",
+        "termination_reason": "none",
+        "off_track": False,
+        "collision": False,
+        "car_fully_crossed": False,
+        "reward_components": {},
+    }
+    
+    # Handle list of dicts (PufferLib)
+    if isinstance(info, list):
+        if idx < len(info):
+            env_info = info[idx]
+            if "cte" in env_info:
+                step_data["cte"] = env_info["cte"]
+            if "speed" in env_info:
+                step_data["speed"] = env_info["speed"]
+            if "forward_vel" in env_info:
+                step_data["forward_vel"] = env_info["forward_vel"]
+            if "hit" in env_info:
+                step_data["hit"] = env_info["hit"]
+            if "termination_reason" in env_info:
+                step_data["termination_reason"] = env_info["termination_reason"]
+            if "off_track" in env_info:
+                step_data["off_track"] = env_info["off_track"]
+            if "collision" in env_info:
+                step_data["collision"] = env_info["collision"]
+            if "car_fully_crossed" in env_info:
+                step_data["car_fully_crossed"] = env_info["car_fully_crossed"]
+            if "reward_components" in env_info:
+                step_data["reward_components"] = env_info["reward_components"]
+    
+    # Handle dict (single env)
+    elif isinstance(info, dict):
+        if "cte" in info:
+            step_data["cte"] = info["cte"]
+        if "speed" in info:
+            step_data["speed"] = info["speed"]
+        if "forward_vel" in info:
+            step_data["forward_vel"] = info["forward_vel"]
+        if "hit" in info:
+            step_data["hit"] = info["hit"]
+        if "termination_reason" in info:
+            step_data["termination_reason"] = info["termination_reason"]
+        if "off_track" in info:
+            step_data["off_track"] = info["off_track"]
+        if "collision" in info:
+            step_data["collision"] = info["collision"]
+        if "car_fully_crossed" in info:
+            step_data["car_fully_crossed"] = info["car_fully_crossed"]
+        if "reward_components" in info:
+            step_data["reward_components"] = info["reward_components"]
+    
+    return step_data
 
 
 class EpisodeMetricsLogger:
@@ -244,6 +393,20 @@ class EpisodeMetricsLogger:
         self.episode_hits = []
         self.episode_lap_times = []
         self.episode_lap_counts = []
+        
+        # Termination tracking
+        self.episode_termination_reasons = []  # List of termination reason strings
+        self.termination_counts = {
+            "off_track": 0,
+            "collision": 0,
+            "car_fully_crossed": 0,
+            "missed_checkpoint": 0,
+            "disqualified": 0,
+            "other": 0,
+        }
+        
+        # Reward component tracking
+        self.episode_reward_components = []  # List of component dicts per episode
     
     def add_metrics(self, metrics):
         """Add metrics from a single episode"""
@@ -262,6 +425,15 @@ class EpisodeMetricsLogger:
             self.episode_forward_vel.append(metrics["forward_vel"])
         if "hit" in metrics:
             self.episode_hits.append(metrics["hit"])
+        if "termination_reason" in metrics:
+            term_reason = metrics["termination_reason"]
+            self.episode_termination_reasons.append(term_reason)
+            if term_reason in self.termination_counts:
+                self.termination_counts[term_reason] += 1
+            else:
+                self.termination_counts["other"] += 1
+        if "reward_components" in metrics:
+            self.episode_reward_components.append(metrics["reward_components"])
         if "lap_time" in metrics:
             self.episode_lap_times.append(metrics["lap_time"])
         if "lap_count" in metrics:
@@ -317,6 +489,46 @@ class EpisodeMetricsLogger:
         if len(self.episode_lap_counts) > 0:
             lap_counts_arr = np.array(self.episode_lap_counts)
             writer.add_scalar("laps/completed_laps", np.sum(lap_counts_arr), global_step)
+        
+        # Termination reasons
+        total_episodes = sum(self.termination_counts.values())
+        if total_episodes > 0:
+            for reason, count in self.termination_counts.items():
+                if count > 0:
+                    writer.add_scalar(f"termination/{reason}", count, global_step)
+        
+        # Reward components (average across episodes)
+        if len(self.episode_reward_components) > 0:
+            # Collect all components
+            done_penalties = []
+            off_track_penalties = []
+            collision_penalties = []
+            speed_rewards = []
+            centering_bonuses = []
+            
+            for components in self.episode_reward_components:
+                if "done_penalty" in components:
+                    done_penalties.append(components["done_penalty"])
+                if "off_track_penalty" in components:
+                    off_track_penalties.append(components["off_track_penalty"])
+                if "collision_penalty" in components:
+                    collision_penalties.append(components["collision_penalty"])
+                if "speed_reward" in components:
+                    speed_rewards.append(components["speed_reward"])
+                if "centering_bonus" in components:
+                    centering_bonuses.append(components["centering_bonus"])
+            
+            # Log averages
+            if done_penalties:
+                writer.add_scalar("reward_components/done_penalty_mean", np.mean(done_penalties), global_step)
+            if off_track_penalties:
+                writer.add_scalar("reward_components/off_track_penalty_mean", np.mean(off_track_penalties), global_step)
+            if collision_penalties:
+                writer.add_scalar("reward_components/collision_penalty_mean", np.mean(collision_penalties), global_step)
+            if speed_rewards:
+                writer.add_scalar("reward_components/speed_reward_mean", np.mean(speed_rewards), global_step)
+            if centering_bonuses:
+                writer.add_scalar("reward_components/centering_bonus_mean", np.mean(centering_bonuses), global_step)
     
     def print_summary(self):
         """Print summary of metrics"""
@@ -333,6 +545,12 @@ class EpisodeMetricsLogger:
             speed_arr = np.array(self.episode_speed)
             hits_arr = np.array(self.episode_hits)
             lines.append(f"  CTE: {np.mean(cte_arr):.3f} | Speed: {np.mean(speed_arr):.2f} | Collisions: {np.mean(hits_arr):.2%}")
+        
+        # Termination summary
+        total_episodes = sum(self.termination_counts.values())
+        if total_episodes > 0:
+            reasons_str = " | ".join([f"{reason}: {count}" for reason, count in self.termination_counts.items() if count > 0])
+            lines.append(f"  Termination: {reasons_str}")
         
         if len(self.episode_lap_times) > 0:
             lap_times_arr = np.array(self.episode_lap_times)
@@ -421,8 +639,23 @@ class VisualizationWindow:
         self.algorithm_name = algorithm_name
         self.port = port
     
-    def update(self, obs, action, clipped_action, reward):
-        """Update the visualization window with new data"""
+    def update(self, obs, action, clipped_action, reward, diagnostic_data=None):
+        """
+        Update the visualization window with new data.
+        
+        Args:
+            obs: Observation image
+            action: Action from policy
+            clipped_action: Clipped action
+            reward: Reward value
+            diagnostic_data: Optional dict with step diagnostics
+                - cte: cross-track error
+                - speed: speed
+                - forward_vel: forward velocity
+                - hit: collision object name
+                - termination_reason: why episode might end
+                - reward_components: dict of reward breakdown
+        """
         # Process observation
         obs_img = process_observation_image(obs)
         
@@ -437,7 +670,7 @@ class VisualizationWindow:
         scaled_w, scaled_h = w * scale_factor, h * scale_factor
         
         if not self.initialized:
-            self.screen = pygame.display.set_mode((scaled_w, scaled_h + 150))
+            self.screen = pygame.display.set_mode((scaled_w, scaled_h + 200))
             # Set window title with algorithm name and port
             title_parts = [self.algorithm_name]
             if self.port is not None:
@@ -451,7 +684,7 @@ class VisualizationWindow:
         self.screen.blit(scaled_surface, (0, 0))
         
         # Clear UI area
-        pygame.draw.rect(self.screen, (0, 0, 0), (0, scaled_h, scaled_w, 150))
+        pygame.draw.rect(self.screen, (0, 0, 0), (0, scaled_h, scaled_w, 200))
         
         # Draw UI elements
         bar_y = scaled_h + 10
@@ -511,9 +744,48 @@ class VisualizationWindow:
         throttle_clipped_text = self.font.render(f"{throttle_clipped_raw:.2f}", True, (255, 255, 255))
         self.screen.blit(throttle_clipped_text, (value_x, clipped_y + 30))
         
-        # Reward text
+        # Reward and diagnostic data
+        reward_y = clipped_y + 60
         reward_text = self.font.render(f"Reward: {reward_val:.2f}", True, (255, 255, 255))
-        self.screen.blit(reward_text, (10, clipped_y + 60))
+        self.screen.blit(reward_text, (label_x, reward_y))
+        
+        # Show diagnostic data if available
+        diag_y = reward_y + 25
+        if diagnostic_data:
+            # CTE and speed
+            cte_val = diagnostic_data.get("cte", 0.0)
+            speed_val = diagnostic_data.get("speed", 0.0)
+            fwd_vel = diagnostic_data.get("forward_vel", 0.0)
+            hit_val = diagnostic_data.get("hit", "none")
+            
+            diag_text = f"CTE: {cte_val:.2f} | Speed: {speed_val:.2f} | FwdVel: {fwd_vel:.2f}"
+            diag_surf = self.font.render(diag_text, True, (200, 200, 200))
+            self.screen.blit(diag_surf, (label_x, diag_y))
+            
+            # Termination reason
+            term_reason = diagnostic_data.get("termination_reason", "none")
+            if term_reason != "none":
+                term_color = (255, 0, 0) if term_reason != "none" else (255, 255, 255)
+                term_text = f"Reason: {term_reason}"
+                term_surf = self.font.render(term_text, True, term_color)
+                self.screen.blit(term_surf, (label_x + 400, diag_y))
+            
+            # Collision indicator
+            if hit_val != "none":
+                hit_surf = self.font.render(f"HIT: {hit_val}", True, (255, 0, 0))
+                self.screen.blit(hit_surf, (label_x, diag_y + 25))
+            
+            # Reward components
+            reward_comp = diagnostic_data.get("reward_components", {})
+            if reward_comp:
+                comp_y = diag_y + 50
+                comp_texts = [
+                    f"Speed: {reward_comp.get('speed_reward', 0.0):.2f}",
+                    f"Center: {reward_comp.get('centering_bonus', 0.0):.2f}",
+                ]
+                for i, text in enumerate(comp_texts):
+                    comp_surf = self.font.render(text, True, (100, 200, 100))
+                    self.screen.blit(comp_surf, (label_x + i * 200, comp_y))
         
         # Update reward history
         self.reward_history.append(reward_val)
@@ -521,7 +793,7 @@ class VisualizationWindow:
             self.reward_history.pop(0)
         
         # Draw reward plot
-        self._draw_reward_plot(scaled_w, scaled_h + 150)
+        self._draw_reward_plot(scaled_w, scaled_h + 200)
         
         pygame.display.flip()
         

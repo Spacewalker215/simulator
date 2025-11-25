@@ -192,6 +192,22 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.starting_line_index = -1
         self.lap_count = 0
 
+        # Tracking for termination conditions and reward components
+        self.termination_reason = "none"
+        self.off_track = False
+        self.collision = False
+        self.car_fully_crossed = False
+        
+        # Reward components for logging
+        self.reward_components = {
+            "done_penalty": 0.0,
+            "off_track_penalty": 0.0,
+            "collision_penalty": 0.0,
+            "speed_reward": 0.0,
+            "centering_bonus": 0.0,
+            "total_reward": 0.0,
+        }
+
     def on_connect(self, client: SimClient) -> None:  # pytype: disable=signature-mismatch
         logger.debug("socket connected")
         self.client = client
@@ -444,6 +460,20 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.roll = 0.0
         self.pitch = 0.0
         self.yaw = 0.0
+        
+        # Reset termination tracking
+        self.termination_reason = "none"
+        self.off_track = False
+        self.collision = False
+        self.car_fully_crossed = False
+        self.reward_components = {
+            "done_penalty": 0.0,
+            "off_track_penalty": 0.0,
+            "collision_penalty": 0.0,
+            "speed_reward": 0.0,
+            "centering_bonus": 0.0,
+            "total_reward": 0.0,
+        }
 
     def get_sensor_size(self) -> Tuple[int, int, int]:
         return self.camera_img_size
@@ -473,6 +503,11 @@ class DonkeyUnitySimHandler(IMesgHandler):
             "car": (self.roll, self.pitch, self.yaw),
             "last_lap_time": self.last_lap_time,
             "lap_count": self.lap_count,
+            "termination_reason": self.termination_reason,
+            "off_track": self.off_track,
+            "collision": self.collision,
+            "car_fully_crossed": self.car_fully_crossed,
+            "reward_components": self.reward_components.copy(),
         }
 
         # Add the second image to the dict
@@ -496,25 +531,61 @@ class DonkeyUnitySimHandler(IMesgHandler):
         logger.debug("custom reward fn set.")
 
     def calc_reward(self, done: bool) -> float:
-        # Normalization factor, real max speed is around 30
-        # but only attained on a long straight line
-        # max_speed = 10
+        """
+        Calculate reward and track components for logging.
+        
+        Reward components:
+        - Done penalty: -1.0 if episode marked as done
+        - Off-track penalty: -1.0 if CTE exceeds max_cte
+        - Collision penalty: -2.0 if car hit something
+        - Speed reward: forward_vel when moving forward
+        - Centering bonus: (1 - |CTE|/max_cte) when moving forward
+        """
+        # Reset components
+        self.reward_components = {
+            "done_penalty": 0.0,
+            "off_track_penalty": 0.0,
+            "collision_penalty": 0.0,
+            "speed_reward": 0.0,
+            "centering_bonus": 0.0,
+            "total_reward": 0.0,
+        }
+        
+        reward = 0.0
 
         if done:
-            return -1.0
+            self.reward_components["done_penalty"] = -1.0
+            reward = -1.0
+            self.reward_components["total_reward"] = reward
+            return reward
 
         if self.cte > self.max_cte:
-            return -1.0
+            self.reward_components["off_track_penalty"] = -1.0
+            reward = -1.0
+            self.reward_components["total_reward"] = reward
+            return reward
 
         # Collision
         if self.hit != "none":
-            return -2.0
+            self.reward_components["collision_penalty"] = -2.0
+            reward = -2.0
+            self.reward_components["total_reward"] = reward
+            return reward
 
-        # going fast close to the center of lane yeilds best reward
+        # Going fast close to the center of lane yields best reward
         if self.forward_vel > 0.0:
-            return (1.0 - (math.fabs(self.cte) / self.max_cte)) * self.forward_vel
+            speed_reward = self.forward_vel
+            centering_bonus = 1.0 - (math.fabs(self.cte) / self.max_cte)
+            reward = centering_bonus * speed_reward
+            
+            self.reward_components["speed_reward"] = speed_reward
+            self.reward_components["centering_bonus"] = centering_bonus
+            self.reward_components["total_reward"] = reward
+            return reward
 
-        # in reverse, reward doesn't have centering term as this can result in some exploits
+        # In reverse, reward doesn't have centering term (prevents exploits)
+        self.reward_components["speed_reward"] = self.forward_vel
+        self.reward_components["total_reward"] = self.forward_vel
         return self.forward_vel
 
     # ------ Socket interface ----------- #
@@ -617,24 +688,66 @@ class DonkeyUnitySimHandler(IMesgHandler):
         logger.debug("custom ep_over fn set.")
 
     def determine_episode_over(self):
-        # we have a few initial frames on start that are sometimes very large CTE when it's behind
-        # the path just slightly. We ignore those.
+        """
+        Determine if episode is over and track the reason.
+        
+        Termination conditions (in priority order):
+        1. Ignore large CTE if near startup (startup noise)
+        2. Car crosses centerline (CTE exceeds max_cte)
+        3. Entire car has fully crossed the line (CTE > max_cte for sustained period)
+        4. Physical collision with object
+        5. Missed checkpoint
+        6. Disqualified
+        """
+        # We have a few initial frames on start that are sometimes very large CTE 
+        # when it's behind the path just slightly. We ignore those.
         if math.fabs(self.cte) > 2 * self.max_cte:
-            pass
-        elif math.fabs(self.cte) > self.max_cte:
-            logger.debug(f"game over: cte {self.cte}")
+            return
+        
+        # Check if car's center point has crossed the line
+        if math.fabs(self.cte) > self.max_cte:
+            self.off_track = True
+            # For "entire car crossed" logic: use a stricter threshold
+            # If CTE is significantly beyond max, the entire car has crossed
+            if math.fabs(self.cte) > self.max_cte * 1.5:
+                self.car_fully_crossed = True
+            
+            if not self.over:
+                logger.debug(f"game over: cte {self.cte}, max_cte {self.max_cte}")
+                if self.car_fully_crossed:
+                    logger.info(f"Car fully crossed the line: CTE={self.cte:.2f}")
+                    self.termination_reason = "car_fully_crossed"
+                else:
+                    self.termination_reason = "off_track"
             self.over = True
-        elif self.hit != "none":
-            logger.debug(f"game over: hit {self.hit}")
+            return
+        
+        # Physical collision
+        if self.hit != "none":
+            self.collision = True
+            if not self.over:
+                logger.debug(f"game over: hit {self.hit}")
+                self.termination_reason = "collision"
             self.over = True
-        elif self.missed_checkpoint:
-            logger.debug("missed checkpoint")
+            return
+        
+        # Missed checkpoint
+        if self.missed_checkpoint:
+            if not self.over:
+                logger.debug("game over: missed checkpoint")
+                self.termination_reason = "missed_checkpoint"
             self.over = True
-        elif self.dq:
-            logger.debug("disqualified")
+            return
+        
+        # Disqualified
+        if self.dq:
+            if not self.over:
+                logger.debug("game over: disqualified")
+                self.termination_reason = "disqualified"
             self.over = True
+            return
 
-        # Disable reset
+        # Disable reset in RACE mode
         if os.environ.get("RACE") == "True":
             self.over = False
 
