@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Tuple, Union
 
 import numpy as np
 from PIL import Image
+from scipy.interpolate import interp1d
 
 from gym_donkeycar.core.fps import FPSTimer
 from gym_donkeycar.core.message import IMesgHandler
@@ -130,6 +131,26 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.loaded = False
         self.max_cte = conf["max_cte"]
         self.max_speed = conf.get("max_speed", float('inf'))  # Maximum speed limit in m/s
+        self.centering_setpoints = conf.get("centering_setpoints", (0.3, 0.8))  # (x_pos, y_value) for spline points 1 and 3
+        
+        # Reward weights (will be normalized)
+        self.reward_speed_weight = conf.get("reward_speed_weight", 1.0)
+        self.reward_centering_weight = conf.get("reward_centering_weight", 1.0)
+        
+        # Normalize weights to sum to 1
+        total_weight = self.reward_speed_weight + self.reward_centering_weight
+        if total_weight > 0:
+            self.reward_speed_weight /= total_weight
+            self.reward_centering_weight /= total_weight
+        else:
+            self.reward_speed_weight = 0.5
+            self.reward_centering_weight = 0.5
+        
+        # Random spawn configuration
+        self.random_spawn_enabled = conf.get("random_spawn_enabled", False)
+        self.random_spawn_max_cte_offset = conf.get("random_spawn_max_cte_offset", 0.0)  # Max distance from centerline
+        self.random_spawn_max_rotation_offset = conf.get("random_spawn_max_rotation_offset", 0.0)  # Max rotation offset in degrees
+        
         self.timer = FPSTimer()
 
         # sensor size - height, width, depth
@@ -191,7 +212,12 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.last_lap_time = 0.0
         self.current_lap_time = 0.0
         self.starting_line_index = -1
-        self.lap_count = 0
+        self.lap_count = 0  # Increments when crossing finish line
+        self.lap_count_proximity = 0  # Increments when passing near starting point while pointing in correct direction
+        self.start_position = None  # Will store (x, y, z) of starting position
+        self.start_yaw = 0.0  # Starting yaw angle
+        self.last_proximity_check = False  # Track if we were near start last frame
+        self.has_left_start = False  # Track if car has moved away from start position
 
         # Tracking for termination conditions and reward components
         self.termination_reason = "none"
@@ -229,13 +255,67 @@ class DonkeyUnitySimHandler(IMesgHandler):
         if self.current_lap_time == 0.0:
             self.current_lap_time = message["timeStamp"]
             self.starting_line_index = message["starting_line_index"]
+            # Store starting position for proximity-based lap completion
+            if self.start_position is None:
+                self.start_position = (self.x, self.y, self.z)
+                self.start_yaw = self.yaw
+                logger.info(f"Starting position set: pos=({self.x:.2f}, {self.y:.2f}, {self.z:.2f}), yaw={self.yaw:.1f}°")
         elif self.starting_line_index == message["starting_line_index"]:
             time_at_crossing = message["timeStamp"]
             self.last_lap_time = float(time_at_crossing - self.current_lap_time)
             self.current_lap_time = time_at_crossing
             self.lap_count += 1
-            lap_msg = f"New lap time: {round(self.last_lap_time, 2)} seconds"
+            lap_msg = f"New lap time (finish line): {round(self.last_lap_time, 2)} seconds"
             logger.info(lap_msg)
+
+    def check_proximity_lap_completion(self) -> None:
+        """
+        Check if the car has completed a lap by passing near the starting point
+        while pointing in the correct direction.
+        
+        The car must first move at least 1.5x the proximity distance away from the start
+        before we begin checking for lap completion. This prevents false positives
+        immediately after spawning.
+        """
+        if self.start_position is None:
+            return
+        
+        # Calculate distance to starting point (2D distance, ignoring y)
+        start_x, start_y, start_z = self.start_position
+        distance_to_start = math.sqrt((self.x - start_x)**2 + (self.z - start_z)**2)
+        
+        # Proximity threshold for lap completion
+        proximity_threshold = 2.0 * self.max_cte
+        
+        # Check if car has left the start area (must be at least 1.5x proximity distance away)
+        if not self.has_left_start:
+            if distance_to_start >= (proximity_threshold * 1.5):
+                self.has_left_start = True
+                logger.debug(f"Car has left start area (distance = {distance_to_start:.2f}m)")
+            # Don't check for lap completion until car has left start area
+            return
+        
+        # Check if within track width of starting point (using max_cte as proxy for track width)
+        within_proximity = distance_to_start <= proximity_threshold
+        
+        if within_proximity:
+            # Check if pointing in roughly the correct direction
+            # Calculate angle difference (in degrees)
+            yaw_diff = abs(self.yaw - self.start_yaw)
+            # Normalize to [-180, 180]
+            while yaw_diff > 180:
+                yaw_diff -= 360
+            yaw_diff = abs(yaw_diff)
+            
+            # Allow up to 90 degrees difference
+            correct_direction = yaw_diff <= 90.0
+            
+            # Increment lap count if we just entered the proximity zone and are pointing correctly
+            if correct_direction and not self.last_proximity_check:
+                self.lap_count_proximity += 1
+                logger.info(f"Lap completed (proximity): count = {self.lap_count_proximity}, distance = {distance_to_start:.2f}m, yaw_diff = {yaw_diff:.1f}°")
+        
+        self.last_proximity_check = within_proximity
 
     @staticmethod
     def extract_keys(dict_: Dict[str, Any], list_: List[str]) -> Dict[str, Any]:
@@ -456,6 +536,11 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.current_lap_time = 0.0
         self.last_lap_time = 0.0
         self.lap_count = 0
+        self.lap_count_proximity = 0
+        self.start_position = None
+        self.start_yaw = 0.0
+        self.last_proximity_check = False
+        self.has_left_start = False
 
         # car
         self.roll = 0.0
@@ -514,6 +599,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
             "car": (self.roll, self.pitch, self.yaw),
             "last_lap_time": self.last_lap_time,
             "lap_count": self.lap_count,
+            "lap_count_proximity": self.lap_count_proximity,
             "termination_reason": self.termination_reason,
             "off_track": self.off_track,
             "collision": self.collision,
@@ -552,7 +638,12 @@ class DonkeyUnitySimHandler(IMesgHandler):
         - Off-track penalty: -1.0 if CTE exceeds max_cte
         - Collision penalty: -2.0 if car hit something
         - Speed reward: forward_vel when moving forward
-        - Centering bonus: (1 - |CTE|/max_cte) when moving forward
+        - Centering bonus: spline-based bonus [0, 1] when moving forward
+        
+        Total reward (when moving forward):
+        reward = (speed_weight * speed_reward + centering_weight * centering_bonus)
+        If speed < 0.1, reward is further scaled by speed to ensure speed matters.
+        Weights are normalized to sum to 1.
         """
         # Reset components
         self.reward_components = {
@@ -588,8 +679,27 @@ class DonkeyUnitySimHandler(IMesgHandler):
         # Going fast close to the center of lane yields best reward
         if self.forward_vel > 0.0:
             speed_reward = self.forward_vel
-            centering_bonus = 1.0 - (math.fabs(self.cte) / self.max_cte)
-            reward = centering_bonus * speed_reward
+            
+            # 5-point spline for centering bonus:
+            # Point 0: x=-1.0 (left edge), y=0.0
+            # Point 1: x=-centering_setpoints[0], y=centering_setpoints[1]
+            # Point 2: x=0.0 (center), y=1.0
+            # Point 3: x=centering_setpoints[0], y=centering_setpoints[1]
+            # Point 4: x=1.0 (right edge), y=0.0
+            normalized_cte = self.cte / self.max_cte  # Range: [-1, 1]
+            x_pos, y_val = self.centering_setpoints
+            spline_x = np.array([-1.0, -x_pos, 0.0, x_pos, 1.0])
+            spline_y = np.array([0.0, y_val, 1.0, y_val, 0.0])
+            centering_spline = interp1d(spline_x, spline_y, kind='cubic', bounds_error=False, fill_value=0.0)
+            centering_bonus = float(centering_spline(normalized_cte))
+            
+            # Calculate weighted sum of components
+            reward = (self.reward_speed_weight * speed_reward + 
+                     self.reward_centering_weight * centering_bonus)
+            
+            # Scale reward by speed when moving slowly to ensure speed matters
+            if speed_reward < 0.1:
+                reward *= speed_reward
             
             self.reward_components["speed_reward"] = speed_reward
             self.reward_components["centering_bonus"] = centering_bonus
@@ -667,6 +777,9 @@ class DonkeyUnitySimHandler(IMesgHandler):
             self.hit = message["hit"]
             if self.hit != "none":
                 logger.info(f"Hit detected: {self.hit}")
+
+        # Check proximity-based lap completion
+        self.check_proximity_lap_completion()
 
         self.determine_episode_over()
 
@@ -812,6 +925,13 @@ class DonkeyUnitySimHandler(IMesgHandler):
 
     def send_reset_car(self) -> None:
         msg = {"msg_type": "reset_car"}
+        
+        # Add random spawn parameters if enabled
+        if self.random_spawn_enabled:
+            msg["random_spawn_enabled"] = "true"
+            msg["random_spawn_max_cte_offset"] = str(self.random_spawn_max_cte_offset)
+            msg["random_spawn_max_rotation_offset"] = str(self.random_spawn_max_rotation_offset)
+        
         self.queue_message(msg)
 
     def send_get_scene_names(self) -> None:

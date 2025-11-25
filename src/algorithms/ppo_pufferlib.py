@@ -48,6 +48,8 @@ class PPOConfig:
     frame_skip: int = 1  # Number of frames to skip between actions
     
     # Curriculum Learning
+    # Note: Curriculum uses lap_count_proximity (passing near start point) rather than
+    # lap_count (crossing finish line) for more robust lap completion detection
     curriculum_learning: bool = False  # Enable curriculum learning for speed
     curriculum_initial_speed: float = 0.25  # Initial max speed (m/s)
     curriculum_target_speed: float = 3.0  # Target max speed (m/s)
@@ -56,6 +58,19 @@ class PPOConfig:
     curriculum_success_threshold: int = 3  # Consecutive laps needed to increase speed
     curriculum_failure_threshold: int = 5  # Failed episodes before decreasing speed
     curriculum_min_lap_time: float = 30.0  # Minimum lap time to count as success (seconds)
+    
+    # Random Spawn
+    random_spawn_enabled: bool = False  # Enable random spawning anywhere on track
+    random_spawn_max_cte_offset: float = 0.0  # Max lateral offset from centerline (meters)
+    random_spawn_max_rotation_offset: float = 0.0  # Max rotation offset from tangent (degrees)
+    
+    # Reward Weights
+    reward_speed_weight: float = 1.0  # Weight for speed reward component
+    reward_centering_weight: float = 1.0  # Weight for centering reward component
+    
+    # Centering Reward Spline
+    centering_setpoint_x: float = 0.3  # X-position for spline points 1 and 3 (0.0 to 1.0)
+    centering_setpoint_y: float = 0.8  # Y-value for spline points 1 and 3 (0.0 to 1.0)
     
     # Training
     total_timesteps: int = 1000000
@@ -342,6 +357,23 @@ class PPOTrainer:
         if config.curriculum_learning:
             env_config["max_speed"] = self.curriculum.get_max_speed()
         
+        # Add random spawn parameters to env_config
+        if config.random_spawn_enabled:
+            env_config["random_spawn_enabled"] = True
+            env_config["random_spawn_max_cte_offset"] = config.random_spawn_max_cte_offset
+            env_config["random_spawn_max_rotation_offset"] = config.random_spawn_max_rotation_offset
+            print(f"Random spawn enabled: lateral offset ±{config.random_spawn_max_cte_offset}m, "
+                  f"rotation offset ±{config.random_spawn_max_rotation_offset}°")
+        
+        # Add reward weights to env_config
+        env_config["reward_speed_weight"] = config.reward_speed_weight
+        env_config["reward_centering_weight"] = config.reward_centering_weight
+        print(f"Reward weights: speed={config.reward_speed_weight}, centering={config.reward_centering_weight}")
+        
+        # Add centering setpoints to env_config
+        env_config["centering_setpoints"] = (config.centering_setpoint_x, config.centering_setpoint_y)
+        print(f"Centering reward setpoints: x={config.centering_setpoint_x}, y={config.centering_setpoint_y}")
+        
         self.envs = make_vectorized_env(
             env_name=config.env_name,
             num_envs=config.num_envs,
@@ -472,7 +504,8 @@ class PPOTrainer:
                 lap_metrics = extract_lap_time_metrics(info, idx)
                 if lap_metrics:
                     # Check if lap_count increased (new lap completed)
-                    current_lap_count = lap_metrics.get("lap_count", 0)
+                    # Use lap_count_proximity for curriculum learning if available
+                    current_lap_count = lap_metrics.get("lap_count_proximity", lap_metrics.get("lap_count", 0))
                     if current_lap_count > self.last_seen_lap_counts[idx]:
                         # New lap completed, log the lap time
                         if "lap_time" in lap_metrics and lap_metrics["lap_time"] > 0.0:
@@ -489,7 +522,8 @@ class PPOTrainer:
                         
                         # Update curriculum based on episode outcome
                         if self.config.curriculum_learning:
-                            lap_count = metrics.get('lap_count', 0)
+                            # Use lap_count_proximity for curriculum learning if available
+                            lap_count = metrics.get('lap_count_proximity', metrics.get('lap_count', 0))
                             lap_time = metrics.get('lap_time', 0.0)
                             episode_length = metrics.get('length', 0)
                             
@@ -937,6 +971,17 @@ def main():
     parser.add_argument("--curriculum-failure-threshold", type=int, default=5, help="failed episodes before decreasing speed")
     parser.add_argument("--curriculum-min-lap-time", type=float, default=30.0, help="minimum lap time to count as success (seconds)")
     
+    # Random Spawn
+    parser.add_argument("--random-spawn", action="store_true", help="enable random spawning anywhere on track")
+    parser.add_argument("--random-spawn-max-cte-offset", type=float, default=1.0, help="max lateral offset from centerline (meters)")
+    parser.add_argument("--random-spawn-max-rotation-offset", type=float, default=15.0, help="max rotation offset from tangent (degrees)")
+    
+    # Reward Weights
+    parser.add_argument("--reward-speed-weight", type=float, default=1.0, help="weight for speed reward component")
+    parser.add_argument("--reward-centering-weight", type=float, default=1.0, help="weight for centering reward component")
+    parser.add_argument("--centering-setpoint-x", type=float, default=0.3, help="x-position for spline points 1 and 3 (0.0 to 1.0)")
+    parser.add_argument("--centering-setpoint-y", type=float, default=0.8, help="y-value for spline points 1 and 3 (0.0 to 1.0)")
+    
     # Training
     parser.add_argument("--total-timesteps", type=int, default=1000000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -983,6 +1028,13 @@ def main():
         curriculum_success_threshold=args.curriculum_success_threshold,
         curriculum_failure_threshold=args.curriculum_failure_threshold,
         curriculum_min_lap_time=args.curriculum_min_lap_time,
+        random_spawn_enabled=args.random_spawn,
+        random_spawn_max_cte_offset=args.random_spawn_max_cte_offset,
+        random_spawn_max_rotation_offset=args.random_spawn_max_rotation_offset,
+        reward_speed_weight=args.reward_speed_weight,
+        reward_centering_weight=args.reward_centering_weight,
+        centering_setpoint_x=args.centering_setpoint_x,
+        centering_setpoint_y=args.centering_setpoint_y,
     )
     
     # Create trainer
