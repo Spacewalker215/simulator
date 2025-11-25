@@ -381,9 +381,10 @@ def process_observation_image(obs):
         except Exception:
             pass
     
-    # Rotate 90 degrees clockwise
+    # Transpose (H, W, C) to (W, H, C) for Pygame
+    # Pygame expects the first dimension to be width (x) and second to be height (y)
     try:
-        arr = np.rot90(arr, k=1)
+        arr = arr.transpose(1, 0, 2)
     except Exception:
         pass
     
