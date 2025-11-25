@@ -44,6 +44,8 @@ class PPOConfig:
     num_envs: int = 4
     start_port: int = 9091
     backend: str = "serial"  # "serial", "multiprocessing", or "ray"
+    max_cte: float = 2.0  # Maximum cross-track error before termination (lower = stricter)
+    frame_skip: int = 1  # Number of frames to skip between actions
     
     # Training
     total_timesteps: int = 1000000
@@ -204,12 +206,17 @@ class PPOTrainer:
         
         # Create vectorized environment
         print(f"Creating {config.num_envs} parallel environments...")
+        env_config = {
+            "max_cte": config.max_cte,
+            "frame_skip": config.frame_skip,
+        }
         self.envs = make_vectorized_env(
             env_name=config.env_name,
             num_envs=config.num_envs,
             start_port=config.start_port,
             backend=config.backend,
             policy_name="ppo",
+            env_config=env_config,
         )
         
         # Get observation and action spaces
@@ -750,6 +757,8 @@ def main():
     parser.add_argument("--num-envs", type=int, default=4)
     parser.add_argument("--start-port", type=int, default=9091)
     parser.add_argument("--backend", type=str, default="serial", choices=["serial", "multiprocessing", "ray"])
+    parser.add_argument("--max-cte", type=float, default=2.0, help="maximum cross-track error before termination (lower = stricter)")
+    parser.add_argument("--frame-skip", type=int, default=1, help="number of frames to skip between actions")
     
     # Training
     parser.add_argument("--total-timesteps", type=int, default=1000000)
@@ -777,6 +786,8 @@ def main():
         num_envs=num_envs,
         start_port=args.start_port,
         backend=args.backend,
+        max_cte=args.max_cte,
+        frame_skip=args.frame_skip,
         total_timesteps=args.total_timesteps,
         learning_rate=args.learning_rate,
         num_steps=args.num_steps,

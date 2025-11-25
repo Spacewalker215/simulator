@@ -321,6 +321,7 @@ def extract_step_data(info, idx):
     """
     step_data = {
         "cte": None,
+        "max_cte": None,
         "speed": None,
         "forward_vel": None,
         "hit": "none",
@@ -328,6 +329,8 @@ def extract_step_data(info, idx):
         "off_track": False,
         "collision": False,
         "car_fully_crossed": False,
+        "missed_checkpoint": False,
+        "dq": False,
         "reward_components": {},
     }
     
@@ -337,6 +340,8 @@ def extract_step_data(info, idx):
             env_info = info[idx]
             if "cte" in env_info:
                 step_data["cte"] = env_info["cte"]
+            if "max_cte" in env_info:
+                step_data["max_cte"] = env_info["max_cte"]
             if "speed" in env_info:
                 step_data["speed"] = env_info["speed"]
             if "forward_vel" in env_info:
@@ -351,6 +356,10 @@ def extract_step_data(info, idx):
                 step_data["collision"] = env_info["collision"]
             if "car_fully_crossed" in env_info:
                 step_data["car_fully_crossed"] = env_info["car_fully_crossed"]
+            if "missed_checkpoint" in env_info:
+                step_data["missed_checkpoint"] = env_info["missed_checkpoint"]
+            if "dq" in env_info:
+                step_data["dq"] = env_info["dq"]
             if "reward_components" in env_info:
                 step_data["reward_components"] = env_info["reward_components"]
     
@@ -358,6 +367,8 @@ def extract_step_data(info, idx):
     elif isinstance(info, dict):
         if "cte" in info:
             step_data["cte"] = info["cte"]
+        if "max_cte" in info:
+            step_data["max_cte"] = info["max_cte"]
         if "speed" in info:
             step_data["speed"] = info["speed"]
         if "forward_vel" in info:
@@ -372,6 +383,10 @@ def extract_step_data(info, idx):
             step_data["collision"] = info["collision"]
         if "car_fully_crossed" in info:
             step_data["car_fully_crossed"] = info["car_fully_crossed"]
+        if "missed_checkpoint" in info:
+            step_data["missed_checkpoint"] = info["missed_checkpoint"]
+        if "dq" in info:
+            step_data["dq"] = info["dq"]
         if "reward_components" in info:
             step_data["reward_components"] = info["reward_components"]
     
@@ -754,9 +769,13 @@ class VisualizationWindow:
         if diagnostic_data:
             # CTE and speed
             cte_val = diagnostic_data.get("cte", 0.0)
+            max_cte_val = diagnostic_data.get("max_cte", 2.0)
             speed_val = diagnostic_data.get("speed", 0.0)
             fwd_vel = diagnostic_data.get("forward_vel", 0.0)
             hit_val = diagnostic_data.get("hit", "none")
+            
+            # Calculate CTE ratio for proximity to termination
+            cte_ratio = abs(cte_val) / max_cte_val if max_cte_val > 0 else 0.0
             
             diag_text = f"CTE: {cte_val:.2f} | Speed: {speed_val:.2f} | FwdVel: {fwd_vel:.2f}"
             diag_surf = self.font.render(diag_text, True, (200, 200, 200))
@@ -775,10 +794,81 @@ class VisualizationWindow:
                 hit_surf = self.font.render(f"HIT: {hit_val}", True, (255, 0, 0))
                 self.screen.blit(hit_surf, (label_x, diag_y + 25))
             
+            # Termination condition proximity indicators
+            term_y = diag_y + 25
+            
+            # CTE proximity bar (shows how close to off-track termination)
+            cte_label = self.font.render("CTE Proximity:", True, (255, 255, 255))
+            self.screen.blit(cte_label, (label_x, term_y))
+            
+            # Draw CTE bar with thresholds
+            cte_bar_x = bar_x
+            cte_bar_width = bar_width
+            cte_bar_height = bar_height
+            
+            # Background bar
+            pygame.draw.rect(self.screen, (60, 60, 60), (cte_bar_x, term_y, cte_bar_width, cte_bar_height))
+            
+            # Draw threshold markers
+            # 1.0 = max_cte (off-track warning)
+            threshold_1_x = int(cte_bar_x + cte_bar_width * 1.0)
+            pygame.draw.line(self.screen, (255, 165, 0), (threshold_1_x, term_y), (threshold_1_x, term_y + cte_bar_height), 2)
+            
+            # 1.5 = car fully crossed
+            threshold_2_x = int(cte_bar_x + min(1.5, 2.0) * cte_bar_width / 2.0)
+            if threshold_2_x <= cte_bar_x + cte_bar_width:
+                pygame.draw.line(self.screen, (255, 0, 0), (threshold_2_x, term_y), (threshold_2_x, term_y + cte_bar_height), 2)
+            
+            # Current CTE position (capped at 2.0 for display)
+            cte_display_ratio = min(cte_ratio, 2.0) / 2.0  # Normalize to 0-1 for bar display
+            cte_fill_width = int(cte_display_ratio * cte_bar_width)
+            
+            # Color based on proximity: green -> yellow -> orange -> red
+            if cte_ratio < 0.7:
+                cte_color = (0, 255, 0)  # Green - safe
+            elif cte_ratio < 0.9:
+                cte_color = (255, 255, 0)  # Yellow - warning
+            elif cte_ratio < 1.0:
+                cte_color = (255, 165, 0)  # Orange - danger
+            else:
+                cte_color = (255, 0, 0)  # Red - off-track
+            
+            pygame.draw.rect(self.screen, cte_color, (cte_bar_x, term_y, cte_fill_width, cte_bar_height))
+            pygame.draw.rect(self.screen, (255, 255, 255), (cte_bar_x, term_y, cte_bar_width, cte_bar_height), 2)
+            
+            # CTE ratio text
+            cte_text = f"{cte_ratio:.2f} / 1.00"
+            if cte_ratio >= 1.5:
+                cte_text += " CROSSED!"
+            elif cte_ratio >= 1.0:
+                cte_text += " OFF-TRACK!"
+            cte_surf = self.font.render(cte_text, True, cte_color)
+            self.screen.blit(cte_surf, (value_x, term_y))
+            
+            # Other termination flags
+            flag_y = term_y + 25
+            flags = []
+            if diagnostic_data.get("off_track", False):
+                flags.append(("OFF-TRACK", (255, 165, 0)))
+            if diagnostic_data.get("collision", False):
+                flags.append(("COLLISION", (255, 0, 0)))
+            if diagnostic_data.get("car_fully_crossed", False):
+                flags.append(("FULLY-CROSSED", (255, 0, 0)))
+            if diagnostic_data.get("missed_checkpoint", False):
+                flags.append(("MISSED-CP", (255, 100, 100)))
+            if diagnostic_data.get("dq", False):
+                flags.append(("DISQUALIFIED", (255, 0, 0)))
+            
+            if flags:
+                flag_text = " | ".join([f[0] for f in flags])
+                flag_color = flags[0][1]  # Use color of first flag
+                flag_surf = self.font.render(flag_text, True, flag_color)
+                self.screen.blit(flag_surf, (label_x, flag_y))
+            
             # Reward components
             reward_comp = diagnostic_data.get("reward_components", {})
             if reward_comp:
-                comp_y = diag_y + 50
+                comp_y = flag_y + 25
                 comp_texts = [
                     f"Speed: {reward_comp.get('speed_reward', 0.0):.2f}",
                     f"Center: {reward_comp.get('centering_bonus', 0.0):.2f}",

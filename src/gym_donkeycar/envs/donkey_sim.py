@@ -493,6 +493,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         info = {
             "pos": (self.x, self.y, self.z),
             "cte": self.cte,
+            "max_cte": self.max_cte,
             "speed": self.speed,
             "forward_vel": self.forward_vel,
             "hit": self.hit,
@@ -508,6 +509,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
             "collision": self.collision,
             "car_fully_crossed": self.car_fully_crossed,
             "reward_components": self.reward_components.copy(),
+            "missed_checkpoint": self.missed_checkpoint,
+            "dq": self.dq,
         }
 
         # Add the second image to the dict
@@ -701,7 +704,8 @@ class DonkeyUnitySimHandler(IMesgHandler):
         """
         # We have a few initial frames on start that are sometimes very large CTE 
         # when it's behind the path just slightly. We ignore those.
-        if math.fabs(self.cte) > 2 * self.max_cte:
+        # Reduced from 2x to 1.5x for quicker termination
+        if math.fabs(self.cte) > 1.5 * self.max_cte:
             return
         
         # Check if car's center point has crossed the line
@@ -709,7 +713,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
             self.off_track = True
             # For "entire car crossed" logic: use a stricter threshold
             # If CTE is significantly beyond max, the entire car has crossed
-            if math.fabs(self.cte) > self.max_cte * 1.5:
+            if math.fabs(self.cte) > self.max_cte * 1.2:
                 self.car_fully_crossed = True
             
             if not self.over:
