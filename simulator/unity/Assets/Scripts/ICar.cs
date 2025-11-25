@@ -51,6 +51,8 @@ public interface ICar
 
 	void RestorePosRot();
 
+	void Set(Vector3 pos, Quaternion rot);
+
     void SetMaxSteering(float val);
 
     float GetMaxSteering();

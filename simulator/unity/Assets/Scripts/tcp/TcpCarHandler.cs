@@ -45,6 +45,12 @@ namespace tk
 
         float time_step = 0.1f;
         bool bResetCar = false;
+        
+        // Random spawn parameters
+        bool bRandomSpawnEnabled = false;
+        float randomSpawnMaxCteOffset = 0.0f;
+        float randomSpawnMaxRotationOffset = 0.0f;
+        
         // If true the simulation runs in asynchronous mode (normal Unity time).
         // If false the simulation runs in synchronous (step) mode and Time.timeScale
         // is set to 0.0 so the client can step the simulation manually.
@@ -273,6 +279,20 @@ namespace tk
         void OnResetCarRecv(JSONObject json)
         {
             bResetCar = true;
+            
+            // Check for random spawn parameters
+            if (json.HasField("random_spawn_enabled") && json.GetField("random_spawn_enabled").str == "true")
+            {
+                bRandomSpawnEnabled = true;
+                randomSpawnMaxCteOffset = float.Parse(json.GetField("random_spawn_max_cte_offset").str, CultureInfo.InvariantCulture);
+                randomSpawnMaxRotationOffset = float.Parse(json.GetField("random_spawn_max_rotation_offset").str, CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                bRandomSpawnEnabled = false;
+                randomSpawnMaxCteOffset = 0.0f;
+                randomSpawnMaxRotationOffset = 0.0f;
+            }
         }
 
         void SendCarResetDone()
@@ -547,6 +567,36 @@ namespace tk
             Application.Quit();
         }
 
+        void ApplyRandomSpawn()
+        {
+            // Select a random node on the path
+            int randomNodeIndex = UnityEngine.Random.Range(0, pm.carPath.nodes.Count);
+            PathNode selectedNode = pm.carPath.nodes[randomNodeIndex];
+            
+            // Get the base position and rotation from the selected node
+            Vector3 basePosition = selectedNode.pos;
+            Quaternion baseRotation = selectedNode.rotation;
+            
+            // Apply random offset perpendicular to the path direction
+            // The path direction is the forward direction of the node's rotation
+            Vector3 pathForward = baseRotation * Vector3.forward;
+            Vector3 pathRight = baseRotation * Vector3.right;
+            
+            // Random offset in the range [-randomSpawnMaxCteOffset, randomSpawnMaxCteOffset]
+            float lateralOffset = UnityEngine.Random.Range(-randomSpawnMaxCteOffset, randomSpawnMaxCteOffset);
+            Vector3 spawnPosition = basePosition + pathRight * lateralOffset;
+            
+            // Apply random rotation offset around Y axis (yaw)
+            float rotationOffset = UnityEngine.Random.Range(-randomSpawnMaxRotationOffset, randomSpawnMaxRotationOffset);
+            Quaternion spawnRotation = baseRotation * Quaternion.Euler(0, rotationOffset, 0);
+            
+            // Set the car's position and rotation
+            car.Set(spawnPosition, spawnRotation);
+            
+            Debug.Log(string.Format("Random spawn: node {0}/{1}, lateral offset: {2:F2}m, rotation offset: {3:F1}°", 
+                randomNodeIndex, pm.carPath.nodes.Count, lateralOffset, rotationOffset));
+        }
+
         void FixedUpdate()
         {
             if (bExitScene)
@@ -559,7 +609,16 @@ namespace tk
             {
                 if (bResetCar)
                 {
-                    car.RestorePosRot();
+                    if (bRandomSpawnEnabled && pm != null && pm.carPath != null && pm.carPath.nodes.Count > 0)
+                    {
+                        // Random spawn anywhere on the track
+                        ApplyRandomSpawn();
+                    }
+                    else
+                    {
+                        // Default: restore to original position
+                        car.RestorePosRot();
+                    }
 
                     if (carObj != null)
                     {
