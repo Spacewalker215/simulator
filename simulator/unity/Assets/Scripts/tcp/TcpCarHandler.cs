@@ -280,18 +280,30 @@ namespace tk
         {
             bResetCar = true;
             
+            // Debug: Print all fields in the reset_car message
+            Debug.Log("[TcpCarHandler] OnResetCarRecv - Message fields:");
+            if (json.keys != null)
+            {
+                foreach (string key in json.keys)
+                {
+                    Debug.Log($"  {key}: {json.GetField(key).str}");
+                }
+            }
+            
             // Check for random spawn parameters
             if (json.HasField("random_spawn_enabled") && json.GetField("random_spawn_enabled").str == "true")
             {
                 bRandomSpawnEnabled = true;
                 randomSpawnMaxCteOffset = float.Parse(json.GetField("random_spawn_max_cte_offset").str, CultureInfo.InvariantCulture);
                 randomSpawnMaxRotationOffset = float.Parse(json.GetField("random_spawn_max_rotation_offset").str, CultureInfo.InvariantCulture);
+                Debug.Log($"[TcpCarHandler] Random spawn ENABLED: cteOffset={randomSpawnMaxCteOffset}, rotationOffset={randomSpawnMaxRotationOffset}");
             }
             else
             {
                 bRandomSpawnEnabled = false;
                 randomSpawnMaxCteOffset = 0.0f;
                 randomSpawnMaxRotationOffset = 0.0f;
+                Debug.Log("[TcpCarHandler] Random spawn DISABLED");
             }
         }
 
@@ -569,13 +581,20 @@ namespace tk
 
         void ApplyRandomSpawn()
         {
+            Debug.Log($"[ApplyRandomSpawn] Starting - randomSpawnMaxCteOffset={randomSpawnMaxCteOffset}, randomSpawnMaxRotationOffset={randomSpawnMaxRotationOffset}");
+            Debug.Log($"[ApplyRandomSpawn] PathManager nodes count: {pm.carPath.nodes.Count}");
+            
             // Select a random node on the path
             int randomNodeIndex = UnityEngine.Random.Range(0, pm.carPath.nodes.Count);
             PathNode selectedNode = pm.carPath.nodes[randomNodeIndex];
             
+            Debug.Log($"[ApplyRandomSpawn] Selected node index: {randomNodeIndex}/{pm.carPath.nodes.Count}");
+            
             // Get the base position and rotation from the selected node
             Vector3 basePosition = selectedNode.pos;
             Quaternion baseRotation = selectedNode.rotation;
+            
+            Debug.Log($"[ApplyRandomSpawn] Base position: {basePosition}, Base rotation: {baseRotation.eulerAngles}");
             
             // Apply random offset perpendicular to the path direction
             // The path direction is the forward direction of the node's rotation
@@ -586,15 +605,18 @@ namespace tk
             float lateralOffset = UnityEngine.Random.Range(-randomSpawnMaxCteOffset, randomSpawnMaxCteOffset);
             Vector3 spawnPosition = basePosition + pathRight * lateralOffset;
             
+            Debug.Log($"[ApplyRandomSpawn] Lateral offset: {lateralOffset:F2}m, Final position: {spawnPosition}");
+            
             // Apply random rotation offset around Y axis (yaw)
             float rotationOffset = UnityEngine.Random.Range(-randomSpawnMaxRotationOffset, randomSpawnMaxRotationOffset);
             Quaternion spawnRotation = baseRotation * Quaternion.Euler(0, rotationOffset, 0);
             
+            Debug.Log($"[ApplyRandomSpawn] Rotation offset: {rotationOffset:F1}°, Final rotation: {spawnRotation.eulerAngles}");
+            
             // Set the car's position and rotation
             car.Set(spawnPosition, spawnRotation);
             
-            Debug.Log(string.Format("Random spawn: node {0}/{1}, lateral offset: {2:F2}m, rotation offset: {3:F1}°", 
-                randomNodeIndex, pm.carPath.nodes.Count, lateralOffset, rotationOffset));
+            Debug.Log($"[ApplyRandomSpawn] COMPLETE - Car spawned at node {randomNodeIndex}/{pm.carPath.nodes.Count}, lateral offset: {lateralOffset:F2}m, rotation offset: {rotationOffset:F1}°");
         }
 
         void FixedUpdate()
@@ -609,14 +631,18 @@ namespace tk
             {
                 if (bResetCar)
                 {
+                    Debug.Log($"[TcpCarHandler] Resetting car - bRandomSpawnEnabled={bRandomSpawnEnabled}, pm={pm != null}, carPath={pm?.carPath != null}, nodeCount={pm?.carPath?.nodes.Count}");
+                    
                     if (bRandomSpawnEnabled && pm != null && pm.carPath != null && pm.carPath.nodes.Count > 0)
                     {
                         // Random spawn anywhere on the track
+                        Debug.Log("[TcpCarHandler] Using ApplyRandomSpawn()");
                         ApplyRandomSpawn();
                     }
                     else
                     {
                         // Default: restore to original position
+                        Debug.Log("[TcpCarHandler] Using car.RestorePosRot() - default spawn");
                         car.RestorePosRot();
                     }
 

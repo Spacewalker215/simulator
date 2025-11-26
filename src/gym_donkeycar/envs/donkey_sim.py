@@ -151,6 +151,12 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.random_spawn_max_cte_offset = conf.get("random_spawn_max_cte_offset", 0.0)  # Max distance from centerline
         self.random_spawn_max_rotation_offset = conf.get("random_spawn_max_rotation_offset", 0.0)  # Max rotation offset in degrees
         
+        # Debug: Print random spawn configuration
+        print(f"[DonkeyEnv] Random spawn configuration:")
+        print(f"  random_spawn_enabled: {self.random_spawn_enabled}")
+        print(f"  random_spawn_max_cte_offset: {self.random_spawn_max_cte_offset}")
+        print(f"  random_spawn_max_rotation_offset: {self.random_spawn_max_rotation_offset}")
+        
         self.timer = FPSTimer()
 
         # sensor size - height, width, depth
@@ -931,6 +937,9 @@ class DonkeyUnitySimHandler(IMesgHandler):
             msg["random_spawn_enabled"] = "true"
             msg["random_spawn_max_cte_offset"] = str(self.random_spawn_max_cte_offset)
             msg["random_spawn_max_rotation_offset"] = str(self.random_spawn_max_rotation_offset)
+            print(f"[DonkeyEnv] Sending reset_car with random spawn: cte_offset={self.random_spawn_max_cte_offset}, rotation_offset={self.random_spawn_max_rotation_offset}")
+        else:
+            print(f"[DonkeyEnv] Sending reset_car WITHOUT random spawn (random_spawn_enabled={self.random_spawn_enabled})")
         
         self.queue_message(msg)
 
