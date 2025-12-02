@@ -136,6 +136,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         # Reward weights (will be normalized)
         self.reward_speed_weight = conf.get("reward_speed_weight", 1.0)
         self.reward_centering_weight = conf.get("reward_centering_weight", 1.0)
+        self.reward_lin_combination = conf.get("reward_lin_combination", False)
         
         # Normalize weights to sum to 1
         total_weight = self.reward_speed_weight + self.reward_centering_weight
@@ -641,15 +642,21 @@ class DonkeyUnitySimHandler(IMesgHandler):
         
         Reward components:
         - Done penalty: -1.0 if episode marked as done
-        - Off-track penalty: -1.0 if CTE exceeds max_cte
+        - Off-track penalty: -1.0 if CTE exceeds max_cte.
+          CTE (Cross Track Error) is provided by the simulator and represents the 
+          lateral distance from the track center. We penalize high CTE to encourage 
+          the agent to stay within the track boundaries and follow the optimal line.
         - Collision penalty: -2.0 if car hit something
         - Speed reward: forward_vel when moving forward
         - Centering bonus: spline-based bonus [0, 1] when moving forward
         
         Total reward (when moving forward):
-        reward = (speed_weight * speed_reward + centering_weight * centering_bonus)
-        If speed < 0.1, reward is further scaled by speed to ensure speed matters.
-        Weights are normalized to sum to 1.
+        If reward_lin_combination is True:
+            reward = (speed_weight * speed_reward + centering_weight * centering_bonus)
+            If speed < 0.1, reward is further scaled by speed to ensure speed matters.
+            Weights are normalized to sum to 1.
+        Else (default):
+            reward = (1.0 - |CTE|/max_cte) * speed_reward
         """
         # Reset components
         self.reward_components = {
@@ -699,13 +706,17 @@ class DonkeyUnitySimHandler(IMesgHandler):
             centering_spline = interp1d(spline_x, spline_y, kind='cubic', bounds_error=False, fill_value=0.0)
             centering_bonus = float(centering_spline(normalized_cte))
             
-            # Calculate weighted sum of components
-            reward = (self.reward_speed_weight * speed_reward + 
-                     self.reward_centering_weight * centering_bonus)
-            
-            # Scale reward by speed when moving slowly to ensure speed matters
-            if speed_reward < 0.1:
-                reward *= speed_reward
+            if self.reward_lin_combination:
+                # Calculate weighted sum of components
+                reward = (self.reward_speed_weight * speed_reward + 
+                         self.reward_centering_weight * centering_bonus)
+                
+                # Scale reward by speed when moving slowly to ensure speed matters
+                if speed_reward < 0.1:
+                    reward *= speed_reward
+            else:
+                # Default product-based reward (using spline centering)
+                reward = centering_bonus * speed_reward
             
             self.reward_components["speed_reward"] = speed_reward
             self.reward_components["centering_bonus"] = centering_bonus

@@ -67,6 +67,7 @@ class PPOConfig:
     # Reward Weights
     reward_speed_weight: float = 1.0  # Weight for speed reward component
     reward_centering_weight: float = 1.0  # Weight for centering reward component
+    reward_lin_combination: bool = False  # Use linear combination of reward terms
     
     # Centering Reward Spline
     centering_setpoint_x: float = 0.3  # X-position for spline points 1 and 3 (0.0 to 1.0)
@@ -368,7 +369,9 @@ class PPOTrainer:
         # Add reward weights to env_config
         env_config["reward_speed_weight"] = config.reward_speed_weight
         env_config["reward_centering_weight"] = config.reward_centering_weight
+        env_config["reward_lin_combination"] = config.reward_lin_combination
         print(f"Reward weights: speed={config.reward_speed_weight}, centering={config.reward_centering_weight}")
+        print(f"Reward linear combination: {config.reward_lin_combination}")
         
         # Add centering setpoints to env_config
         env_config["centering_setpoints"] = (config.centering_setpoint_x, config.centering_setpoint_y)
@@ -979,6 +982,7 @@ def main():
     # Reward Weights
     parser.add_argument("--reward-speed-weight", type=float, default=1.0, help="weight for speed reward component")
     parser.add_argument("--reward-centering-weight", type=float, default=1.0, help="weight for centering reward component")
+    parser.add_argument("--reward-lin-combination", action="store_true", help="use linear combination of reward terms")
     parser.add_argument("--centering-setpoint-x", type=float, default=0.3, help="x-position for spline points 1 and 3 (0.0 to 1.0)")
     parser.add_argument("--centering-setpoint-y", type=float, default=0.8, help="y-value for spline points 1 and 3 (0.0 to 1.0)")
     
@@ -1033,6 +1037,7 @@ def main():
         random_spawn_max_rotation_offset=args.random_spawn_max_rotation_offset,
         reward_speed_weight=args.reward_speed_weight,
         reward_centering_weight=args.reward_centering_weight,
+        reward_lin_combination=args.reward_lin_combination,
         centering_setpoint_x=args.centering_setpoint_x,
         centering_setpoint_y=args.centering_setpoint_y,
     )
