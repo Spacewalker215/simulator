@@ -56,6 +56,10 @@ namespace tk
         // is set to 0.0 so the client can step the simulation manually.
         bool bExitScene = false;
 
+        public float controlTimeOut = 0.01f;
+        public float timeoutBrakeVal = 0.70f;
+        private System.DateTime lastControlTime;
+
         public enum State
         {
             UnConnected,
@@ -106,6 +110,7 @@ namespace tk
 
         public void Start()
         {
+            lastControlTime = System.DateTime.Now;
             SendCarLoaded();
             state = State.SendTelemetry;
         }
@@ -258,7 +263,11 @@ namespace tk
 
                 car.RequestSteering(ai_steering);
                 car.RequestThrottle(ai_throttle);
+                car.RequestSteering(ai_steering);
+                car.RequestThrottle(ai_throttle);
                 car.RequestFootBrake(ai_brake);
+
+                lastControlTime = System.DateTime.Now;
             }
             catch (Exception e)
             {
@@ -700,6 +709,12 @@ namespace tk
                 if (timeSinceLastMoved >= GlobalState.timeOut && carSpawner != null)
                 {
                     Boot();
+                }
+
+                if ((System.DateTime.Now - lastControlTime).TotalSeconds > controlTimeOut)
+                {
+                    car.RequestThrottle(0.0f);
+                    car.RequestFootBrake(timeoutBrakeVal);
                 }
             }
         }
