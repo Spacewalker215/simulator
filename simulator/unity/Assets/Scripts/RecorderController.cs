@@ -70,7 +70,7 @@ public class RecorderController : MonoBehaviour
             // -qp 0: lossless (or -crf 18 for high quality)
             // -pix_fmt yuv420p: output pixel format (compatible with most players)
             // -y: overwrite output
-            string args = $"-f rawvideo -vcodec rawvideo -s {width}x{height} -r {frameRate} -pix_fmt rgb24 -i - -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -y \"{outputPath}\"";
+            string args = $"-f rawvideo -vcodec rawvideo -s {width}x{height} -r {frameRate} -pix_fmt rgb24 -i - -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -vf vflip -y \"{outputPath}\"";
 
             ProcessStartInfo startInfo = new ProcessStartInfo
             {

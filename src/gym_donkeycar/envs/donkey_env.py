@@ -41,7 +41,7 @@ def supply_defaults(conf: Dict[str, Any]) -> None:
         ("throttle_max", 1.0),
         ("max_speed", float('inf')),  # Maximum speed in m/s (default: no limit)
         # Sigma represents the smoothing window in frames. To smooth over ~0.5 seconds (30 frames), you need a sigma around 10.0 - 20.0.
-        ("action_smoothing", True),
+        ("action_smoothing", False),
         ("action_smoothing_sigma", 1.0),
         ("action_history_len", 120),
         ("min_throttle", 0.0),
@@ -142,8 +142,8 @@ class DonkeyEnv(gym.Env):
             self.smoothing_weights = np.exp(-0.5 * (distances / self.action_smoothing_sigma) ** 2)
             # Normalize weights to sum to 1
             self.smoothing_weights /= np.sum(self.smoothing_weights)
-            print(f"Action smoothing enabled: sigma={self.action_smoothing_sigma}, history_len={self.action_history_len}")
-            print(f"Smoothing weights: {self.smoothing_weights}")
+            #print(f"Action smoothing enabled: sigma={self.action_smoothing_sigma}, history_len={self.action_history_len}")
+            #print(f"Smoothing weights: {self.smoothing_weights}")
 
     def __del__(self) -> None:
         self.close()

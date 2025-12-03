@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import os
+import subprocess
 
 import argparse
 from datetime import datetime
@@ -438,6 +439,7 @@ class PPOTrainer:
         
         # Setup logging
         self.log_dir, self.model_dir = setup_logging_dirs(config.log_dir, config.model_dir)
+        self.run_id = os.path.basename(self.log_dir)
         print(f"TensorBoard log directory: {self.log_dir}")
         self.writer = SummaryWriter(self.log_dir)
         
@@ -459,7 +461,7 @@ class PPOTrainer:
         # Video Recording State
         self.recording_state = "IDLE"  # IDLE, WAITING_FOR_EPISODE_START, RECORDING
         self.current_video_filename = ""
-        self.video_dir = os.path.expanduser("~/roboracer_ws/simulator/videos")
+        self.video_dir = os.path.expanduser("~/roboracer_ws/simulator/output/videos")
         if config.record_videos:
             os.makedirs(self.video_dir, exist_ok=True)
             print(f"Video recording enabled. Videos will be saved to: {self.video_dir}")
@@ -497,21 +499,66 @@ class PPOTrainer:
         """Read video file and log to TensorBoard"""
         try:
             import torchvision
-            # read_video returns (T, H, W, C) in [0, 255]
-            # add_video expects (N, T, C, H, W)
-            video, _, _ = torchvision.io.read_video(video_path, pts_unit='sec')
             
-            if len(video) > 0:
-                # Permute to (T, C, H, W)
-                video = video.permute(0, 3, 1, 2)
-                # Add batch dimension (1, T, C, H, W)
-                video = video.unsqueeze(0)
+            # Retry loop to wait for file to be written
+            max_retries = 10
+            retry_delay = 0.5
+            
+            for i in range(max_retries):
+                if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+                    try:
+                        # Post-process video with ffmpeg to fix orientation (flip vertically and horizontally)
+                        time.sleep(1.0)  # Wait for file to be fully released
+                        raw_video_path = video_path.replace(".mp4", "_raw.mp4")
+                        os.rename(video_path, raw_video_path)
+                        
+                        # ffmpeg command to flip vertically and horizontally
+                        # -i input -vf "vflip,hflip" -c:a copy output
+                        result = subprocess.run([
+                            "ffmpeg", "-y", "-i", raw_video_path, 
+                            "-vf", "vflip,hflip", 
+                            "-c:a", "copy", 
+                            video_path
+                        ], capture_output=True, text=True)
+                        
+                        if result.returncode != 0:
+                            raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
+                        
+                        print(f"Fixed video orientation: {video_path}")
+                        
+                        # read_video returns (T, H, W, C) in [0, 255]
+                        # add_video expects (N, T, C, H, W)
+                        video, _, _ = torchvision.io.read_video(video_path, pts_unit='sec')
+                        
+                        if len(video) > 0:
+                            # Permute to (T, C, H, W)
+                            video = video.permute(0, 3, 1, 2)
+                            # Add batch dimension (1, T, C, H, W)
+                            video = video.unsqueeze(0)
+                            
+                            self.writer.add_video("recording/episode", video, step, fps=20)
+                            self.writer.flush()
+                            print(f"Logged video to TensorBoard: {video_path}")
+                            
+                            ## Clean up raw file
+                            #if os.path.exists(raw_video_path):
+                            #    os.remove(raw_video_path)
+                                
+                            return
+                        else:
+                            print(f"Warning: Empty video file {video_path} (attempt {i+1}/{max_retries})")
+                    except subprocess.CalledProcessError as e:
+                        print(f"Warning: Error processing video {video_path} (attempt {i+1}/{max_retries}): {e}")
+                        if hasattr(e, 'stderr') and e.stderr:
+                            print(f"FFmpeg stderr: {e.stderr}")
+                    except Exception as e:
+                        print(f"Warning: Error processing/reading video {video_path} (attempt {i+1}/{max_retries}): {e}")
+                else:
+                    print(f"Waiting for video file {video_path}... (attempt {i+1}/{max_retries})")
                 
-                self.writer.add_video("recording/episode", video, step, fps=20)
-                self.writer.flush()
-                print(f"Logged video to TensorBoard: {video_path}")
-            else:
-                print(f"Warning: Empty video file {video_path}")
+                time.sleep(retry_delay)
+            
+            print(f"Error: Failed to process video {video_path} after {max_retries} attempts")
                 
         except ImportError as e:
             print(f"Warning: torchvision not installed or import failed: {e}")
@@ -612,8 +659,8 @@ class PPOTrainer:
                 if self.recording_state == "WAITING_FOR_EPISODE_START":
                     if done[0]:
                         # Start recording next episode
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"{self.video_dir}/video_update{self.update}_{timestamp}.mp4"
+                        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"{self.video_dir}/{self.run_id}_update{self.update}.mp4"
                         # On Windows/Unity, path might need to be absolute or relative to project. 
                         # We pass absolute path.
                         self.current_video_filename = filename

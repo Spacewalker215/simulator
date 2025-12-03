@@ -195,7 +195,8 @@ def launch_simulator(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         universal_newlines=True,
-        bufsize=1
+        bufsize=1,
+        errors='replace'
     )
     pid = proc.pid
     _launched_processes.append(proc)

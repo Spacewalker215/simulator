@@ -390,6 +390,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
                     "img_h",
                     "img_d",
                     "img_enc",
+                    "img_quality",
                     "fov",
                     "fish_eye_x",
                     "fish_eye_y",
@@ -412,6 +413,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
                     "img_h",
                     "img_d",
                     "img_enc",
+                    "img_quality",
                     "fov",
                     "fish_eye_x",
                     "fish_eye_y",
@@ -458,6 +460,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
                 "img_h",
                 "img_d",
                 "img_enc",
+                "img_quality",
                 "fov",
                 "fish_eye_x",
                 "fish_eye_y",
@@ -619,6 +622,9 @@ class DonkeyUnitySimHandler(IMesgHandler):
         self.lap_times = []
         self.best_lap = None
         self.last_lap_start_time = 0.0
+        
+        # Track last moving time for stuck detection
+        self.last_moving_time = time.time()
 
     def send_msg(self, msg: Dict[str, Any]) -> None:
         if self.client:
@@ -841,6 +847,9 @@ class DonkeyUnitySimHandler(IMesgHandler):
 
         if "speed" in message:
             self.speed = message["speed"]
+            # Update last moving time if we are moving
+            if self.speed > 0.1:
+                self.last_moving_time = time.time()
 
         e = [self.pitch * np.pi / 180.0, self.yaw * np.pi / 180.0, self.roll * np.pi / 180.0]
         q = euler_to_quat(e)
@@ -982,6 +991,14 @@ class DonkeyUnitySimHandler(IMesgHandler):
             self.over = True
             return
 
+        # Stuck detection: if car hasn't moved for 2 seconds, end episode
+        if time.time() - self.last_moving_time > 2.0:
+            if not self.over:
+                logger.debug("game over: car stuck")
+                self.termination_reason = "stuck"
+            self.over = True
+            return
+
         # Disable reset in RACE mode
         if os.environ.get("RACE") == "True":
             self.over = False
@@ -1114,6 +1131,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         img_h: int = 0,
         img_d: int = 0,
         img_enc: Union[str, int] = 0,  # 0 is default value
+        img_quality: int = 100,
         fov: int = 0,
         fish_eye_x: float = 0.0,
         fish_eye_y: float = 0.0,
@@ -1142,6 +1160,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
             "img_h": str(img_h),
             "img_d": str(img_d),
             "img_enc": str(img_enc),
+            "img_quality": str(img_quality),
             "offset_x": str(offset_x),
             "offset_y": str(offset_y),
             "offset_z": str(offset_z),

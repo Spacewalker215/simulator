@@ -14,7 +14,9 @@ public class CameraSensor : MonoBehaviour {
 	RenderTexture ren;
 	Rect ImageRect;
 
-	public void SetConfig(float fov, float offset_x, float offset_y, float offset_z, float rot_x, float rot_y, float rot_z, int img_w, int img_h, int img_d, string _img_enc)
+	public int compressionQuality = 75;
+
+	public void SetConfig(float fov, float offset_x, float offset_y, float offset_z, float rot_x, float rot_y, float rot_z, int img_w, int img_h, int img_d, string _img_enc, int _compressionQuality)
 	{
 		if (img_d != 0)
 		{
@@ -42,6 +44,8 @@ public class CameraSensor : MonoBehaviour {
 
 		if(fov != 0.0f)
 			sensorCam.fieldOfView = fov;
+
+		compressionQuality = _compressionQuality;
 	}
 
 	void Awake()
@@ -90,6 +94,6 @@ public class CameraSensor : MonoBehaviour {
 		if(img_enc == "TGA")
 			return GetImage().EncodeToTGA();
 			
-		return GetImage().EncodeToJPG();
+		return GetImage().EncodeToJPG(compressionQuality);
 	}
 }
