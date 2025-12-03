@@ -427,6 +427,8 @@ namespace tk
             int img_quality = 75;
             if (json.HasField("img_quality"))
                 img_quality = int.Parse(json.GetField("img_quality").str);
+            
+            Debug.Log($"[TcpCarHandler] CamConfig: quality={img_quality}, w={img_w}, h={img_h}");
 
             if (carObj != null)
                 UnityMainThreadDispatcher.Instance().Enqueue(SetCamConfig(iCamera, fov, offset_x, offset_y, offset_z, rot_x, rot_y, rot_z, img_w, img_h, img_d, img_enc, img_quality, fish_eye_x, fish_eye_y));

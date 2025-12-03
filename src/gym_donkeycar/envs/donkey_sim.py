@@ -1170,6 +1170,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         }
         self.blocking_send(msg)
         time.sleep(0.1)
+        logger.info(f"Sent cam_config: quality={img_quality}, w={img_w}, h={img_h}")
 
     def send_lidar_config(
         self,
