@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import os
-import subprocess
+
 
 import argparse
 from datetime import datetime
@@ -461,7 +461,9 @@ class PPOTrainer:
         # Video Recording State
         self.recording_state = "IDLE"  # IDLE, WAITING_FOR_EPISODE_START, RECORDING
         self.current_video_filename = ""
-        self.video_dir = os.path.expanduser("~/roboracer_ws/simulator/output/videos")
+        self.video_dir = os.path.expanduser(f"~/roboracer_ws/simulator/output/videos/{self.run_id}")
+        self.recording_trigger_update = 0
+        self.recording_metadata = ""
         if config.record_videos:
             os.makedirs(self.video_dir, exist_ok=True)
             print(f"Video recording enabled. Videos will be saved to: {self.video_dir}")
@@ -507,24 +509,9 @@ class PPOTrainer:
             for i in range(max_retries):
                 if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
                     try:
-                        # Post-process video with ffmpeg to fix orientation (flip vertically and horizontally)
+
                         time.sleep(1.0)  # Wait for file to be fully released
-                        raw_video_path = video_path.replace(".mp4", "_raw.mp4")
-                        os.rename(video_path, raw_video_path)
-                        
-                        # ffmpeg command to flip vertically and horizontally
-                        # -i input -vf "vflip,hflip" -c:a copy output
-                        result = subprocess.run([
-                            "ffmpeg", "-y", "-i", raw_video_path, 
-                            "-vf", "vflip,hflip", 
-                            "-c:a", "copy", 
-                            video_path
-                        ], capture_output=True, text=True)
-                        
-                        if result.returncode != 0:
-                            raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
-                        
-                        print(f"Fixed video orientation: {video_path}")
+
                         
                         # read_video returns (T, H, W, C) in [0, 255]
                         # add_video expects (N, T, C, H, W)
@@ -540,17 +527,12 @@ class PPOTrainer:
                             self.writer.flush()
                             print(f"Logged video to TensorBoard: {video_path}")
                             
-                            ## Clean up raw file
-                            #if os.path.exists(raw_video_path):
-                            #    os.remove(raw_video_path)
+
                                 
                             return
                         else:
                             print(f"Warning: Empty video file {video_path} (attempt {i+1}/{max_retries})")
-                    except subprocess.CalledProcessError as e:
-                        print(f"Warning: Error processing video {video_path} (attempt {i+1}/{max_retries}): {e}")
-                        if hasattr(e, 'stderr') and e.stderr:
-                            print(f"FFmpeg stderr: {e.stderr}")
+
                     except Exception as e:
                         print(f"Warning: Error processing/reading video {video_path} (attempt {i+1}/{max_retries}): {e}")
                 else:
@@ -660,7 +642,24 @@ class PPOTrainer:
                     if done[0]:
                         # Start recording next episode
                         # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"{self.video_dir}/{self.run_id}_update{self.update}.mp4"
+                        filename = f"{self.video_dir}/update_{self.recording_trigger_update}.mp4"
+                        
+                        # Save model checkpoint for this video
+                        model_path = f"{self.model_dir}/update_{self.recording_trigger_update}.pt"
+                        torch.save({
+                            "update": self.recording_trigger_update,
+                            "global_step": self.global_step,
+                            "model_state_dict": self.agent.state_dict(),
+                            "optimizer_state_dict": self.optimizer.state_dict(),
+                        }, model_path)
+                        print(f"Saved model checkpoint for video to {model_path}")
+                        
+                        # Save metadata file
+                        metadata_path = f"{self.video_dir}/update_{self.recording_trigger_update}.txt"
+                        with open(metadata_path, "w") as f:
+                            f.write(self.recording_metadata)
+                        print(f"Saved metadata to {metadata_path}")
+
                         # On Windows/Unity, path might need to be absolute or relative to project. 
                         # We pass absolute path.
                         self.current_video_filename = filename
@@ -866,29 +865,39 @@ class PPOTrainer:
             
             # Print progress
             sps = int(self.global_step / (time.time() - start_time))
-            print(f"Update {update}/{num_updates} | Step {self.global_step} | SPS: {sps}")
+            progress_str = f"Update {update}/{num_updates} | Step {self.global_step} | SPS: {sps}"
+            print(progress_str)
             
-            # Trigger video recording for next episode
-            if self.config.record_videos and self.recording_state == "IDLE":
-                self.recording_state = "WAITING_FOR_EPISODE_START"
-                print("Video recording requested for next episode.")
-
+            # Collect metadata for recording
+            metadata_lines = [progress_str]
             
             # Print episode metrics summary
             summary = self.episode_metrics.print_summary()
             if summary:
                 print(summary)
+                metadata_lines.append(summary)
             
             # Print training stats
-            print(f"  PG Loss: {train_stats['pg_loss']:.4f} | V Loss: {train_stats['v_loss']:.4f}")
-            print(f"  Entropy: {train_stats['entropy_loss']:.4f} | KL: {train_stats['approx_kl']:.4f}")
+            train_stats_str = f"  PG Loss: {train_stats['pg_loss']:.4f} | V Loss: {train_stats['v_loss']:.4f}\n" \
+                              f"  Entropy: {train_stats['entropy_loss']:.4f} | KL: {train_stats['approx_kl']:.4f}"
+            print(train_stats_str)
+            metadata_lines.append(train_stats_str)
             
             # Print curriculum stats
             if self.config.curriculum_learning:
                 curriculum_stats = self.curriculum.get_stats()
-                print(f"  [Curriculum] Max Speed: {curriculum_stats['current_max_speed']:.2f} m/s | "
-                      f"Success Rate: {curriculum_stats['recent_success_rate']:.1%} | "
-                      f"Total Laps: {curriculum_stats['total_laps_completed']}")
+                curr_str = f"  [Curriculum] Max Speed: {curriculum_stats['current_max_speed']:.2f} m/s | " \
+                           f"Success Rate: {curriculum_stats['recent_success_rate']:.1%} | " \
+                           f"Total Laps: {curriculum_stats['total_laps_completed']}"
+                print(curr_str)
+                metadata_lines.append(curr_str)
+            
+            # Trigger video recording for next episode
+            if self.config.record_videos and self.recording_state == "IDLE":
+                self.recording_state = "WAITING_FOR_EPISODE_START"
+                self.recording_trigger_update = update
+                self.recording_metadata = "\n".join(metadata_lines)
+                print("Video recording requested for next episode.")
             
             # Reset episode metrics for next update
             self.episode_metrics.reset()
