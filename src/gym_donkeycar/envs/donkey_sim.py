@@ -149,6 +149,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         
         # Random spawn configuration
         self.random_spawn_enabled = conf.get("random_spawn_enabled", False)
+        self.random_spawn_init_loc = conf.get("random_spawn_init_loc", False)
         self.random_spawn_max_cte_offset = conf.get("random_spawn_max_cte_offset", 0.0)  # Max distance from centerline
         self.random_spawn_max_rotation_offset = conf.get("random_spawn_max_rotation_offset", 0.0)  # Max rotation offset in degrees
         
@@ -161,6 +162,7 @@ class DonkeyUnitySimHandler(IMesgHandler):
         # Debug: Print random spawn configuration
         print(f"[DonkeyEnv] Random spawn configuration:")
         print(f"  random_spawn_enabled: {self.random_spawn_enabled}")
+        print(f"  random_spawn_init_loc: {self.random_spawn_init_loc}")
         print(f"  random_spawn_max_cte_offset: {self.random_spawn_max_cte_offset}")
         print(f"  random_spawn_max_rotation_offset: {self.random_spawn_max_rotation_offset}")
         
@@ -553,6 +555,9 @@ class DonkeyUnitySimHandler(IMesgHandler):
     def reset(self) -> None:
         logger.debug("reseting")
         self.reset_complete = False
+        self.last_proximity_check = False
+        self.has_left_start = False
+        
         self.send_reset_car()
         
         # Wait for reset confirmation from simulator
@@ -1064,6 +1069,9 @@ class DonkeyUnitySimHandler(IMesgHandler):
             msg["random_spawn_enabled"] = "true"
             msg["random_spawn_max_cte_offset"] = str(self.random_spawn_max_cte_offset)
             msg["random_spawn_max_rotation_offset"] = str(self.random_spawn_max_rotation_offset)
+            
+            if self.random_spawn_init_loc:
+                msg["random_spawn_init_loc"] = "true"
             #print(f"[DonkeyEnv] Sending reset_car with random spawn: cte_offset={self.random_spawn_max_cte_offset}, rotation_offset={self.random_spawn_max_rotation_offset}")
         else:
             pass

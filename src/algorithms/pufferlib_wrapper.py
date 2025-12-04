@@ -153,6 +153,7 @@ def make_vectorized_env(
                     
                     # Random spawn parameters
                     "random_spawn_enabled": env_config.get("random_spawn_enabled", False),
+                    "random_spawn_init_loc": env_config.get("random_spawn_init_loc", False),
                     "random_spawn_max_cte_offset": env_config.get("random_spawn_max_cte_offset", 0.0),
                     "random_spawn_max_rotation_offset": env_config.get("random_spawn_max_rotation_offset", 0.0),
                     

@@ -24,6 +24,7 @@ namespace tk
         public CameraSensor camSensor;
         public CameraSensor camSensorB;
         public Lidar lidar;
+        public Hokuyo10lx hokuyo;
         public Odometry[] odom;
 
         public RecorderController recorder;
@@ -50,6 +51,7 @@ namespace tk
         
         // Random spawn parameters
         bool bRandomSpawnEnabled = false;
+        bool bRandomSpawnInitLoc = false;
         float randomSpawnMaxCteOffset = 0.0f;
         float randomSpawnMaxRotationOffset = 0.0f;
         
@@ -60,6 +62,9 @@ namespace tk
 
         public float controlTimeOut = 0.5f;
         private System.DateTime lastControlTime;
+        
+        private Vector3 initPosition;
+        private Quaternion initRotation;
 
         public enum State
         {
@@ -114,6 +119,8 @@ namespace tk
         public void Start()
         {
             lastControlTime = System.DateTime.Now;
+            initPosition = carObj.transform.position;
+            initRotation = carObj.transform.rotation;
             SendCarLoaded();
             state = State.SendTelemetry;
         }
@@ -173,6 +180,11 @@ namespace tk
             if (lidar != null && lidar.gameObject.activeInHierarchy)
             {
                 json.AddField("lidar", lidar.GetOutputAsJson());
+            }
+
+            if (hokuyo != null && hokuyo.gameObject.activeInHierarchy)
+            {
+                json.AddField("lidar_scan", hokuyo.GetOutputAsJson());
             }
 
             foreach (Odometry o in odom)
@@ -290,7 +302,6 @@ namespace tk
 
         void OnResetCarRecv(JSONObject json)
         {
-            bResetCar = true;
             
             // Debug: Print all fields in the reset_car message
             /*
@@ -310,15 +321,27 @@ namespace tk
                 bRandomSpawnEnabled = true;
                 randomSpawnMaxCteOffset = float.Parse(json.GetField("random_spawn_max_cte_offset").str, CultureInfo.InvariantCulture);
                 randomSpawnMaxRotationOffset = float.Parse(json.GetField("random_spawn_max_rotation_offset").str, CultureInfo.InvariantCulture);
-                // Debug.Log($"[TcpCarHandler] Random spawn ENABLED: cteOffset={randomSpawnMaxCteOffset}, rotationOffset={randomSpawnMaxRotationOffset}");
+                
+                if (json.HasField("random_spawn_init_loc") && json.GetField("random_spawn_init_loc").str == "true")
+                {
+                    bRandomSpawnInitLoc = true;
+                }
+                else
+                {
+                    bRandomSpawnInitLoc = false;
+                }
+                // Debug.Log($"[TcpCarHandler] Random spawn ENABLED: cteOffset={randomSpawnMaxCteOffset}, rotationOffset={randomSpawnMaxRotationOffset}, initLoc={bRandomSpawnInitLoc}");
             }
             else
             {
                 bRandomSpawnEnabled = false;
+                bRandomSpawnInitLoc = false;
                 randomSpawnMaxCteOffset = 0.0f;
                 randomSpawnMaxRotationOffset = 0.0f;
                 // Debug.Log("[TcpCarHandler] Random spawn DISABLED");
             }
+            
+            bResetCar = true;
         }
 
         void SendCarResetDone()
@@ -640,17 +663,26 @@ namespace tk
             // Debug.Log($"[ApplyRandomSpawn] Starting - randomSpawnMaxCteOffset={randomSpawnMaxCteOffset}, randomSpawnMaxRotationOffset={randomSpawnMaxRotationOffset}");
             // Debug.Log($"[ApplyRandomSpawn] PathManager nodes count: {pm.carPath.nodes.Count}");
             
-            // Select a random node on the path
-            int randomNodeIndex = UnityEngine.Random.Range(0, pm.carPath.nodes.Count);
-            PathNode selectedNode = pm.carPath.nodes[randomNodeIndex];
-            
-            // Debug.Log($"[ApplyRandomSpawn] Selected node index: {randomNodeIndex}/{pm.carPath.nodes.Count}");
-            
-            // Get the base position and rotation from the selected node
-            Vector3 basePosition = selectedNode.pos;
-            Quaternion baseRotation = selectedNode.rotation;
-            
-            // Debug.Log($"[ApplyRandomSpawn] Base position: {basePosition}, Base rotation: {baseRotation.eulerAngles}");
+            Vector3 basePosition;
+            Quaternion baseRotation;
+
+            if (bRandomSpawnInitLoc)
+            {
+                // Use the cached initial spawn location as base
+                basePosition = initPosition;
+                baseRotation = initRotation;
+                iActiveSpan = 0;
+            }
+            else
+            {
+                // Select a random node on the path
+                int randomNodeIndex = UnityEngine.Random.Range(0, pm.carPath.nodes.Count);
+                PathNode selectedNode = pm.carPath.nodes[randomNodeIndex];
+                
+                basePosition = selectedNode.pos;
+                baseRotation = selectedNode.rotation;
+                iActiveSpan = randomNodeIndex;
+            }
             
             // Apply random offset perpendicular to the path direction
             // The path direction is the forward direction of the node's rotation
@@ -663,7 +695,7 @@ namespace tk
  
             // Random offset in the range [-randomSpawnMaxCteOffset, randomSpawnMaxCteOffset]
             float lateralOffset = UnityEngine.Random.Range(-randomSpawnMaxCteOffset, randomSpawnMaxCteOffset);
-            
+
             // Add a small vertical offset (0.2m) to prevent spawning inside the ground/track
             Vector3 spawnPosition = basePosition + pathRight * lateralOffset + Vector3.up * 0.2f;
             
@@ -683,7 +715,8 @@ namespace tk
             // Debug.Log($"[ApplyRandomSpawn] COMPLETE - Car spawned at node {randomNodeIndex}/{pm.carPath.nodes.Count}, lateral offset: {lateralOffset:F2}m, rotation offset: {rotationOffset:F1}°");
             
             // Update the active span index to the selected node so CTE calculation starts from the correct place
-            iActiveSpan = randomNodeIndex;
+            // iActiveSpan is already set in the if/else block above
+            // iActiveSpan = randomNodeIndex;
         }
 
         void FixedUpdate()

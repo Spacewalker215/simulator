@@ -405,6 +405,13 @@ class PPOTrainer:
         
         # Add playback mode to env_config
         env_config["playback"] = config.playback
+        if config.playback:
+            # Enable random spawn at init location with noise for playback
+            env_config["random_spawn_enabled"] = True
+            env_config["random_spawn_init_loc"] = True
+            env_config["random_spawn_max_cte_offset"] = 0.05
+            env_config["random_spawn_max_rotation_offset"] = 5.0
+            print(f"Playback mode: Enabled random spawn at start line with offsets (cte={env_config['random_spawn_max_cte_offset']}m, rot={env_config['random_spawn_max_rotation_offset']}°)")
         
         self.envs = make_vectorized_env(
             env_name=config.env_name,
