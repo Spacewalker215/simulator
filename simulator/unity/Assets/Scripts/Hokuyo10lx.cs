@@ -11,6 +11,7 @@ public class Hokuyo10lx : MonoBehaviour
     public float maxRange = 30f;
     public float minRange = 0.1f;
     public float noise = 0.01f; // meters sigma
+    public float rangeScale = 0.1f;
     public bool visualizeScan = false;
     public bool logScanSent = false;
 
@@ -63,8 +64,8 @@ public class Hokuyo10lx : MonoBehaviour
         json.AddField("min_angle", minAngle * Mathf.Deg2Rad);
         json.AddField("max_angle", maxAngle * Mathf.Deg2Rad);
         json.AddField("angle_increment", angleIncrement * Mathf.Deg2Rad);
-        json.AddField("range_min", minRange);
-        json.AddField("range_max", maxRange);
+        json.AddField("range_min", minRange * rangeScale);
+        json.AddField("range_max", maxRange * rangeScale);
         
         // Convert ranges to byte array
         byte[] byteArray = new byte[ranges.Length * 4];
@@ -92,7 +93,16 @@ public class Hokuyo10lx : MonoBehaviour
             // Rotation around Y: positive is clockwise? No, Unity is left-handed?
             // Quaternion.Euler(0, angle, 0) rotates around Y.
             
-            Vector3 localDir = Quaternion.Euler(0, angle, 0) * Vector3.forward;
+            // Calculate direction in local space then transform to world
+            // Assumes sensor is mounted with Y up. 
+            // Angle is around Y axis. 0 is forward (Z).
+            // -135 is right-back? 
+            // In Unity: Z is forward, X is right.
+            // Rotation around Y: positive is clockwise? No, Unity is left-handed?
+            // Quaternion.Euler(0, angle, 0) rotates around Y.
+            
+            // Negate angle to convert from Unity Left-Handed to ROS Right-Handed
+            Vector3 localDir = Quaternion.Euler(0, -angle, 0) * Vector3.forward;
             Vector3 worldDir = transform.TransformDirection(localDir);
             
             RaycastHit hit;
@@ -104,11 +114,13 @@ public class Hokuyo10lx : MonoBehaviour
                 {
                     dist += UnityEngine.Random.Range(-noise, noise);
                 }
-                ranges[i] = Mathf.Clamp(dist, minRange, maxRange);
+                // Apply range scale
+                ranges[i] = Mathf.Clamp(dist * rangeScale, minRange * rangeScale, maxRange * rangeScale);
 
                 if (visualizeScan)
                 {
-                    debugRayEnds[i] = pos + worldDir * ranges[i];
+                    // Visualization uses Unity world units (unscaled)
+                    debugRayEnds[i] = pos + worldDir * dist;
                     debugRayHits[i] = true;
                 }
             }
