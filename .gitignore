@@ -79,3 +79,5 @@ output/
 
 resources
 logs/
+
+.env

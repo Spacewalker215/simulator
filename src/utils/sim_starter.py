@@ -182,13 +182,20 @@ def launch_simulator(
 
     # Build command
     abs_sim_path = os.path.abspath(sim_path)
-    cmd = [
+    
+    # Auto-detect and apply VirtualGL if running inside the container
+    cmd = []
+    vglrun_path = "/opt/VirtualGL/bin/vglrun"
+    if os.environ.get("IN_CONTAINER_NAME") and os.path.exists(vglrun_path):
+        cmd.extend([vglrun_path, "-d", "egl"])
+        
+    cmd.extend([
         sim_path,
         "--scene", scene,
         "--port", str(port),
         "--host", host,
         "-logfile", logfile,
-    ]
+    ])
     print(f"Launching simulator with command:\n  {' '.join(cmd)}")
     
     # Launch simulator with output capture
