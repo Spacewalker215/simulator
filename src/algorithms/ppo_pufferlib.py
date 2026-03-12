@@ -122,6 +122,9 @@ class PPOConfig:
     model_path: Optional[str] = None
     num_episodes: int = 10  # Number of episodes to run in playback mode
     deterministic: bool = True  # Use mean action (no sampling) in playback
+    
+    # Simulator launch
+    launch_sim: bool = True
 
 
 class CNNActorCritic(nn.Module):
@@ -368,6 +371,7 @@ class PPOTrainer:
         env_config = {
             "max_cte": config.max_cte,
             "frame_skip": config.frame_skip,
+            "launch": config.launch_sim,
         }
         # Add max_speed to env_config if curriculum learning is enabled
         if config.curriculum_learning:
@@ -1176,6 +1180,7 @@ def main():
     parser.add_argument("--backend", type=str, default="serial", choices=["serial", "multiprocessing", "ray"])
     parser.add_argument("--max-cte", type=float, default=2.0, help="maximum cross-track error before termination (lower = stricter)")
     parser.add_argument("--frame-skip", type=int, default=1, help="number of frames to skip between actions")
+    parser.add_argument("--no-launch", action="store_true", help="do not launch the simulator (connect to existing instance)")
     
     # Curriculum Learning
     parser.add_argument("--curriculum-learning", action="store_true", help="enable curriculum learning for speed")
@@ -1272,6 +1277,7 @@ def main():
         min_throttle=args.min_throttle,
         log_dir=args.log_dir,
         model_dir=args.model_dir,
+        launch_sim=not args.no_launch,
     )
 
     

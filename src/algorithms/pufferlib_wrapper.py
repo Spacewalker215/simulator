@@ -185,6 +185,7 @@ def make_vectorized_env(
                     "action_smoothing_sigma": env_config.get("action_smoothing_sigma", 1.0),
                     "action_history_len": env_config.get("action_history_len", 120),
                     "min_throttle": env_config.get("min_throttle", 0.0),
+                    "launch": env_config.get("launch", True),
                     
                     "cam_config": {
                         "img_w": env_config.get("img_w", 320),

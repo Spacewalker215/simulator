@@ -324,8 +324,16 @@ def start_sim(env_name: str = "donkey-circuit-launch-track-v0", port: int = 9091
     log_filename_prefix = conf.get("log_filename_prefix", "sim_output") if conf else "sim_output"
     
     # Launch simulator instance (this may reuse an existing simulator)
-    proc, port = launch_simulator(scene=scene, sim_path=sim_path, port=port, debug=debug, log_filename_prefix=log_filename_prefix)
-    
+    proc = None
+    if conf is None or conf.get("launch", True):
+        proc, port = launch_simulator(scene=scene, sim_path=sim_path, port=port, debug=debug, log_filename_prefix=log_filename_prefix)
+    else:
+        if debug:
+            print(f"[DEBUG] Skipping simulator launch as requested (port: {port})")
+        # Check if port is actually in use
+        if not is_port_in_use(port):
+            print(f"Warning: launch=False requested for port {port}, but the port is not in use. Connection may fail.")
+
     # Check if we already have an environment for this (env_name, port) combination
     # Do this after launch_simulator so we use the actual port
     cache_key = (env_name, port)
@@ -346,7 +354,7 @@ def start_sim(env_name: str = "donkey-circuit-launch-track-v0", port: int = 9091
     if proc is not None:
         start_delay = conf.get("start_delay", 5.0) if conf is not None else 5.0
         time.sleep(start_delay)
-    
+
     # Get policy name from conf if provided, otherwise default to "agent"
     policy_name = conf.get("policy_name", "agent") if conf else "agent"
     
