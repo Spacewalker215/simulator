@@ -38,6 +38,43 @@ from rl_utils import (
     set_random_seeds,
     setup_logging_dirs,
 )
+# --- PHASE C IMPORTS & AI SETUP ---
+import re
+import math
+from openai import OpenAI
+
+# Connect to your vLLM server running on TACC via the SSH tunnel
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="EMPTY"
+)
+
+def get_social_compliance_score(min_distance, harsh_corrections, harsh_brakes, aggressive_cutoffs, max_close_speed):
+    prompt = (
+        f"The robot car completed a maneuver. Minimum distance to the obstacle was {min_distance:.1f} meters. "
+        f"The maximum speed while passing the obstacle was {max_close_speed:.1f} m/s. "
+        f"There were {harsh_corrections} erratic steering twitches, {harsh_brakes} harsh brake-checks, "
+        f"and {aggressive_cutoffs} aggressive lateral cut-offs. "
+        f"As an external observer or driver sharing the road, rate the car's social compliance and safety from -1.0 (dangerous/erratic) to 1.0 (polite/predictable). Respond with ONLY the number."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="Qwen/Qwen2.5-14B-Instruct",
+            messages=[
+                {"role": "system", "content": "You are a human evaluating a robot car's etiquette."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            max_tokens=10
+        )
+        reply = response.choices[0].message.content.strip()
+        match = re.search(r'-?\d+\.\d+|-?\d+', reply)
+        return max(-1.0, min(1.0, float(match.group()))) if match else 0.0
+    except Exception as e:
+        print(f"LLM API Error: {e}")
+        return 0.0
+# ----------------------------------
 
 
 @dataclass
@@ -50,7 +87,7 @@ class PPOConfig:
     backend: str = "serial"  # "serial", "multiprocessing", or "ray"
     max_cte: float = 2.0  # Maximum cross-track error before termination (lower = stricter)
     frame_skip: int = 1  # Number of frames to skip between actions
-    
+
     # Curriculum Learning
     # Note: Curriculum uses lap_count_proximity (passing near start point) rather than
     # lap_count (crossing finish line) for more robust lap completion detection
@@ -62,29 +99,29 @@ class PPOConfig:
     curriculum_success_threshold: int = 3  # Consecutive laps needed to increase speed
     curriculum_failure_threshold: int = 5  # Failed episodes before decreasing speed
     curriculum_min_lap_time: float = 30.0  # Minimum lap time to count as success (seconds)
-    
+
     # Random Spawn
     random_spawn_enabled: bool = False  # Enable random spawning anywhere on track
     random_spawn_max_cte_offset: float = 0.0  # Max lateral offset from centerline (meters)
     random_spawn_max_rotation_offset: float = 0.0  # Max rotation offset from tangent (degrees)
-    
+
     # Action Smoothing & Control
     action_smoothing: bool = False # Enable action smoothing
     action_smoothing_sigma: float = 1.0  # Sigma for Gaussian smoothing
     action_history_len: int = 120  # Length of action history for smoothing
     min_throttle: float = 0.0  # Minimum throttle value (if > 0)
-    
+
     # Reward Weights
     reward_speed_weight: float = 1.0  # Weight for speed reward component
     reward_centering_weight: float = 1.0  # Weight for centering reward component
     reward_distance_weight: float = 0.0  # Weight for distance reward component
     reward_done_penalty: float = -1.0  # Penalty for episode termination (crash/off-track)
     reward_lin_combination: bool = False  # Use linear combination of reward terms
-    
+
     # Centering Reward Spline
     centering_setpoint_x: float = 0.3  # X-position for spline points 1 and 3 (0.0 to 1.0)
     centering_setpoint_y: float = 0.8  # Y-value for spline points 1 and 3 (0.0 to 1.0)
-    
+
     # Training
     total_timesteps: int = 1000000
     learning_rate: float = 3e-4
@@ -100,29 +137,29 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     normalize_advantages: bool = True
     clip_vloss: bool = True
-    
+
     # Logging
     log_dir: str = "./output/tensorboard"
     model_dir: str = "./output/models"
-    
+
     # Device
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    
+
     # Video Recording
     record_videos: bool = False  # Enable video recording of episodes during training
 
-    
+
     # Misc
     seed: int = 1
     torch_deterministic: bool = True
     visualize: bool = False
-    
+
     # Playback mode
     playback: bool = False
     model_path: Optional[str] = None
     num_episodes: int = 10  # Number of episodes to run in playback mode
     deterministic: bool = True  # Use mean action (no sampling) in playback
-    
+
     # Simulator launch
     launch_sim: bool = True
 
@@ -135,120 +172,120 @@ class CNNActorCritic(nn.Module):
     """
     def __init__(self, observation_space, action_space):
         super().__init__()
-        
+
         # Shared feature extractor
         self.feature_extractor = CNNFeatureExtractor(observation_space)
         feature_dim = self.feature_extractor.feature_dim
-        
+
         # Actor head (policy)
         self.actor_mean = nn.Sequential(
             layer_init(nn.Linear(feature_dim, 256)),
             nn.ReLU(),
             layer_init(nn.Linear(256, action_space.shape[0]), std=0.01),
         )
-        
+
         # Actor log std (learned parameter)
         self.actor_logstd = nn.Parameter(torch.zeros(1, action_space.shape[0]))
-        
+
         # Critic head (value function)
         self.critic = nn.Sequential(
             layer_init(nn.Linear(feature_dim, 256)),
             nn.ReLU(),
             layer_init(nn.Linear(256, 1), std=1.0),
         )
-    
+
     def get_value(self, x):
         """Get value estimate for state"""
         features = self.feature_extractor(x)
         return self.critic(features)
-    
+
     def get_action_and_value(self, x, action=None):
         """Get action distribution and value estimate"""
         features = self.feature_extractor(x)
-        
+
         # Actor: get mean and std for continuous actions
         action_mean = self.actor_mean(features)
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
         probs = Normal(action_mean, action_std)
-        
+
         if action is None:
             action = probs.sample()
-        
+
         # Compute log probability and entropy
         log_prob = probs.log_prob(action).sum(1)
         entropy = probs.entropy().sum(1)
-        
+
         # Critic: get value estimate
         value = self.critic(features)
-        
+
         return action, log_prob, entropy, value
 
 
 class CurriculumManager:
     """Manages curriculum learning for speed adjustment"""
-    
+
     def __init__(self, config: PPOConfig):
         self.config = config
         self.enabled = config.curriculum_learning
-        
+
         if not self.enabled:
             return
-        
+
         # Current speed limit
         self.current_max_speed = config.curriculum_initial_speed
-        
+
         # Performance tracking
         self.consecutive_successes = 0
         self.consecutive_failures = 0
         self.recent_episodes = []  # Track recent episode outcomes
         self.total_laps_completed = 0
-        
+
         print(f"\nCurriculum Learning Enabled:")
         print(f"  Initial max speed: {self.current_max_speed:.2f} m/s")
         print(f"  Target max speed: {config.curriculum_target_speed:.2f} m/s")
         print(f"  Success threshold: {config.curriculum_success_threshold} consecutive laps")
         print(f"  Failure threshold: {config.curriculum_failure_threshold} failed episodes")
-    
+
     def get_max_speed(self) -> float:
         """Get current maximum speed limit"""
         if not self.enabled:
             return float('inf')  # No limit
         return self.current_max_speed
-    
+
     def update(self, lap_count: int, lap_time: float, episode_length: int) -> dict:
         """Update curriculum based on episode outcome
-        
+
         Returns:
             dict: Status information about curriculum changes
         """
         if not self.enabled:
             return {}
-        
+
         status = {
             'speed_changed': False,
             'old_speed': self.current_max_speed,
             'new_speed': self.current_max_speed,
             'reason': ''
         }
-        
+
         # Determine if episode was successful
         # Success = completed at least 1 lap with reasonable lap time
         is_success = (
-            lap_count > 0 and 
+            lap_count > 0 and
             lap_time >= self.config.curriculum_min_lap_time and
             lap_time < 300.0  # Reasonable upper bound
         )
-        
+
         self.recent_episodes.append(is_success)
         if len(self.recent_episodes) > 20:  # Keep last 20 episodes
             self.recent_episodes.pop(0)
-        
+
         if is_success:
             self.total_laps_completed += lap_count
             self.consecutive_successes += 1
             self.consecutive_failures = 0
-            
+
             # Check if we should increase speed
             if self.consecutive_successes >= self.config.curriculum_success_threshold:
                 if self.current_max_speed < self.config.curriculum_target_speed:
@@ -265,7 +302,7 @@ class CurriculumManager:
         else:
             self.consecutive_failures += 1
             self.consecutive_successes = 0
-            
+
             # Check if we should decrease speed
             if self.consecutive_failures >= self.config.curriculum_failure_threshold:
                 if self.current_max_speed > self.config.curriculum_initial_speed:
@@ -279,18 +316,18 @@ class CurriculumManager:
                     status['new_speed'] = self.current_max_speed
                     status['reason'] = f'{self.consecutive_failures} consecutive failures'
                     self.consecutive_failures = 0  # Reset counter
-        
+
         return status
-    
+
     def get_stats(self) -> dict:
         """Get curriculum statistics"""
         if not self.enabled:
             return {}
-        
+
         success_rate = 0.0
         if len(self.recent_episodes) > 0:
             success_rate = sum(self.recent_episodes) / len(self.recent_episodes)
-        
+
         return {
             'current_max_speed': self.current_max_speed,
             'consecutive_successes': self.consecutive_successes,
@@ -306,7 +343,7 @@ class RolloutBuffer:
         self.num_steps = num_steps
         self.num_envs = num_envs
         self.device = device
-        
+
         # Allocate storage
         self.obs = torch.zeros((num_steps, num_envs) + obs_shape).to(device)
         self.actions = torch.zeros((num_steps, num_envs) + action_shape).to(device)
@@ -314,9 +351,9 @@ class RolloutBuffer:
         self.rewards = torch.zeros((num_steps, num_envs)).to(device)
         self.dones = torch.zeros((num_steps, num_envs)).to(device)
         self.values = torch.zeros((num_steps, num_envs)).to(device)
-        
+
         self.step = 0
-    
+
     def add(self, obs, action, logprob, reward, done, value):
         """Add a step to the buffer"""
         self.obs[self.step] = obs
@@ -326,16 +363,16 @@ class RolloutBuffer:
         self.dones[self.step] = done
         self.values[self.step] = value
         self.step += 1
-    
+
     def reset(self):
         """Reset the buffer"""
         self.step = 0
-    
+
     def compute_returns_and_advantages(self, next_value, next_done, gamma, gae_lambda):
         """Compute returns and advantages using GAE"""
         advantages = torch.zeros_like(self.rewards).to(self.device)
         lastgaelam = 0
-        
+
         for t in reversed(range(self.num_steps)):
             if t == self.num_steps - 1:
                 nextnonterminal = 1.0 - next_done
@@ -343,29 +380,29 @@ class RolloutBuffer:
             else:
                 nextnonterminal = 1.0 - self.dones[t + 1]
                 nextvalues = self.values[t + 1]
-            
+
             delta = self.rewards[t] + gamma * nextvalues * nextnonterminal - self.values[t]
             advantages[t] = lastgaelam = delta + gamma * gae_lambda * nextnonterminal * lastgaelam
-        
+
         returns = advantages + self.values
         return returns, advantages
 
 
 class PPOTrainer:
     """PPO Trainer using PufferLib vectorization"""
-    
+
     def __init__(self, config: PPOConfig):
         self.config = config
-        
+
         # Set random seeds
         set_random_seeds(config.seed, config.torch_deterministic)
-        
+
         # Setup device
         self.device = torch.device(config.device)
-        
+
         # Create curriculum manager
         self.curriculum = CurriculumManager(config)
-        
+
         # Create vectorized environment
         print(f"Creating {config.num_envs} parallel environments...")
         env_config = {
@@ -376,7 +413,7 @@ class PPOTrainer:
         # Add max_speed to env_config if curriculum learning is enabled
         if config.curriculum_learning:
             env_config["max_speed"] = self.curriculum.get_max_speed()
-        
+
         # Add random spawn parameters to env_config
         if config.random_spawn_enabled:
             env_config["random_spawn_enabled"] = True
@@ -384,7 +421,7 @@ class PPOTrainer:
             env_config["random_spawn_max_rotation_offset"] = config.random_spawn_max_rotation_offset
             print(f"Random spawn enabled: lateral offset ±{config.random_spawn_max_cte_offset}m, "
                   f"rotation offset ±{config.random_spawn_max_rotation_offset}°")
-        
+
         # Add reward weights to env_config
         env_config["reward_speed_weight"] = config.reward_speed_weight
         env_config["reward_centering_weight"] = config.reward_centering_weight
@@ -394,11 +431,11 @@ class PPOTrainer:
         print(f"Reward weights: speed={config.reward_speed_weight}, centering={config.reward_centering_weight}, distance={config.reward_distance_weight}")
         print(f"Done penalty: {config.reward_done_penalty}")
         print(f"Reward linear combination: {config.reward_lin_combination}")
-        
+
         # Add centering setpoints to env_config
         env_config["centering_setpoints"] = (config.centering_setpoint_x, config.centering_setpoint_y)
         print(f"Centering reward setpoints: x={config.centering_setpoint_x}, y={config.centering_setpoint_y}")
-        
+
         # Add action smoothing and control parameters to env_config
         env_config["action_smoothing"] = config.action_smoothing
         env_config["action_smoothing_sigma"] = config.action_smoothing_sigma
@@ -406,7 +443,7 @@ class PPOTrainer:
         env_config["min_throttle"] = config.min_throttle
         print(f"Action smoothing: {config.action_smoothing} (sigma={config.action_smoothing_sigma}, history={config.action_history_len})")
         print(f"Min throttle: {config.min_throttle}")
-        
+
         # Add playback mode to env_config
         env_config["playback"] = config.playback
         if config.playback:
@@ -416,7 +453,7 @@ class PPOTrainer:
             env_config["random_spawn_max_cte_offset"] = 0.05
             env_config["random_spawn_max_rotation_offset"] = 5.0
             print(f"Playback mode: Enabled random spawn at start line with offsets (cte={env_config['random_spawn_max_cte_offset']}m, rot={env_config['random_spawn_max_rotation_offset']}°)")
-        
+
         self.envs = make_vectorized_env(
             env_name=config.env_name,
             num_envs=config.num_envs,
@@ -425,18 +462,18 @@ class PPOTrainer:
             policy_name="ppo",
             env_config=env_config,
         )
-        
+
         # Get observation and action spaces
         obs_space = self.envs.single_observation_space
         action_space = self.envs.single_action_space
-        
+
         print(f"Observation space: {obs_space}")
         print(f"Action space: {action_space}")
-        
+
         # Create agent
         self.agent = CNNActorCritic(obs_space, action_space).to(self.device)
         self.optimizer = optim.Adam(self.agent.parameters(), lr=config.learning_rate, eps=1e-5)
-        
+
         # Create rollout buffer
         self.buffer = RolloutBuffer(
             num_steps=config.num_steps,
@@ -445,32 +482,32 @@ class PPOTrainer:
             action_shape=action_space.shape,
             device=self.device,
         )
-        
+
         # Compute batch sizes
         self.batch_size = int(config.num_envs * config.num_steps)
         self.minibatch_size = int(self.batch_size // config.num_minibatches)
-        
+
         # Setup logging
         self.log_dir, self.model_dir = setup_logging_dirs(config.log_dir, config.model_dir)
         self.run_id = os.path.basename(self.log_dir)
         print(f"TensorBoard log directory: {self.log_dir}")
         self.writer = SummaryWriter(self.log_dir)
-        
+
         # Training state
         self.global_step = 0
         self.update = 0
         self.episode_metrics = EpisodeMetricsLogger()
-        
+
         # Track last seen lap counts per environment to detect new laps
         self.last_seen_lap_counts = [0] * config.num_envs
-        
+
         # Setup visualization
         self.visualize = config.visualize
         self.visualizer = VisualizationWindow(
             algorithm_name="PPO",
             port=config.start_port
         ) if config.visualize else None
-        
+
         # Video Recording State
         self.recording_state = "IDLE"  # IDLE, WAITING_FOR_EPISODE_START, RECORDING
         self.current_video_filename = ""
@@ -492,7 +529,7 @@ class PPOTrainer:
                     if hasattr(env, 'viewer') and hasattr(env.viewer, 'handler'):
                         break
                     env = env.env
-                
+
                 if hasattr(env, 'viewer') and hasattr(env.viewer, 'handler'):
                     env.viewer.handler.send_msg(message)
                 else:
@@ -514,34 +551,34 @@ class PPOTrainer:
         """Read video file and log to TensorBoard"""
         try:
             import torchvision
-            
+
             # Retry loop to wait for file to be written
             max_retries = 10
             retry_delay = 0.5
-            
+
             for i in range(max_retries):
                 if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
                     try:
 
                         time.sleep(1.0)  # Wait for file to be fully released
 
-                        
+
                         # read_video returns (T, H, W, C) in [0, 255]
                         # add_video expects (N, T, C, H, W)
                         video, _, _ = torchvision.io.read_video(video_path, pts_unit='sec')
-                        
+
                         if len(video) > 0:
                             # Permute to (T, C, H, W)
                             video = video.permute(0, 3, 1, 2)
                             # Add batch dimension (1, T, C, H, W)
                             video = video.unsqueeze(0)
-                            
+
                             self.writer.add_video("recording/episode", video, step, fps=20)
                             self.writer.flush()
                             print(f"Logged video to TensorBoard: {video_path}")
-                            
 
-                                
+
+
                             return
                         else:
                             print(f"Warning: Empty video file {video_path} (attempt {i+1}/{max_retries})")
@@ -550,18 +587,18 @@ class PPOTrainer:
                         print(f"Warning: Error processing/reading video {video_path} (attempt {i+1}/{max_retries}): {e}")
                 else:
                     print(f"Waiting for video file {video_path}... (attempt {i+1}/{max_retries})")
-                
+
                 time.sleep(retry_delay)
-            
+
             print(f"Error: Failed to process video {video_path} after {max_retries} attempts")
-                
+
         except ImportError as e:
             print(f"Warning: torchvision not installed or import failed: {e}")
             print("To use video logging, please install torchvision and av: uv add torchvision av")
         except Exception as e:
             print(f"Error processing video {video_path}: {e}")
 
-    
+
     def load_model(self, model_path: str):
         """Load a saved model checkpoint"""
         print(f"Loading model from {model_path}...")
@@ -570,11 +607,11 @@ class PPOTrainer:
         self.global_step = checkpoint.get("global_step", 0)
         self.update = checkpoint.get("update", 0)
         print(f"Model loaded successfully (update: {self.update}, global_step: {self.global_step})")
-        
+
     def collect_rollouts(self):
         """Collect rollouts from the environment"""
         self.buffer.reset()
-        
+
         # Reset environments
         reset_result = self.envs.reset()
         # Handle tuple return (obs, info) or just obs
@@ -582,26 +619,107 @@ class PPOTrainer:
             next_obs = reset_result[0]
         else:
             next_obs = reset_result
-        
+
         next_obs = prepare_observation(next_obs, self.device)
         next_done = torch.zeros(self.config.num_envs).to(self.device)
-        
+
         # Collect num_steps per environment
         for step in range(self.config.num_steps):
             self.global_step += self.config.num_envs
-            
+
             # Get action from policy
             with torch.no_grad():
                 action, logprob, _, value = self.agent.get_action_and_value(next_obs)
                 value = value.flatten()
-            
+
             # Convert and clip actions to action space
             action_np = clip_action_to_space(action, self.envs.single_action_space)
-            
+
             # Step environment
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action_np)
-            done = np.logical_or(terminated, truncated)
+            # --- PHASE B & C: COADAPTIVE ALIGNMENT LOOP (Social Compliance) ---
+            info_dict = info[0] if isinstance(info, (list, tuple, np.ndarray)) and len(info) > 0 else info
+            if not isinstance(info_dict, dict):
+                info_dict = {}
+
+            # 1. Initialize trackers for a new episode
+            if not hasattr(self, "ep_min_distance"):
+                self.ep_min_distance = 10.0
+                self.ep_harsh_corrections = 0
+                self.ep_harsh_brakes = 0
+                self.ep_aggressive_cutoffs = 0
+                self.ep_max_close_speed = 0.0
+
+                self.last_steering = action_np[0][0]
+                self.last_speed = info_dict.get('speed', 0.0)
+                self.last_cte = info_dict.get('cte', 0.0)
+
+            # Extract current speed and CTE
+            current_speed = info_dict.get('speed', 0.0)
+            current_cte = info_dict.get('cte', 0.0)
+            current_steering = action_np[0][0]
+
+            # 2. Track Erratic Steering
+            if abs(current_steering - self.last_steering) > 0.5:
+                self.ep_harsh_corrections += 1
+            self.last_steering = current_steering
+
+            # 3. Track Harsh Braking (Brake-checks)
+            if (self.last_speed - current_speed) > 1.0: # Dropped speed by > 1 m/s in a single frame
+                self.ep_harsh_brakes += 1
+            self.last_speed = current_speed
+
+            # 4. Track Aggressive Cut-offs (Lateral Swipes)
+            if abs(current_cte - self.last_cte) > 0.5: # Moved laterally very quickly
+                self.ep_aggressive_cutoffs += 1
+            self.last_cte = current_cte
+
+            # 5. Track Min Distance & Fly-By Speed (Using the Virtual Obstacle)
+            VIRTUAL_CAR_X = 15.0 
+            VIRTUAL_CAR_Z = 20.0
+            current_distance = 10.0
             
+            if 'pos' in info_dict:
+                ego_x, ego_y, ego_z = info_dict['pos']
+                current_distance = math.sqrt((ego_x - VIRTUAL_CAR_X)**2 + (ego_z - VIRTUAL_CAR_Z)**2)
+            
+            self.ep_min_distance = min(self.ep_min_distance, current_distance)
+            
+            # Fly-By Speed: If we are within 5 meters of the obstacle, how fast are we going?
+            if current_distance < 5.0:
+                self.ep_max_close_speed = max(self.ep_max_close_speed, current_speed)
+
+            # 6. End of Episode LLM Call & TensorBoard Logging
+            is_done = terminated[0] or truncated[0]
+            if is_done:
+                llm_score = get_social_compliance_score(
+                    self.ep_min_distance, 
+                    self.ep_harsh_corrections,
+                    self.ep_harsh_brakes,
+                    self.ep_aggressive_cutoffs,
+                    self.ep_max_close_speed
+                )
+                
+                print(f"\n[Phase C] Episode Finished! Min Dist: {self.ep_min_distance:.1f}m | Max Close Speed: {self.ep_max_close_speed:.1f}m/s")
+                print(f"[Phase C] Erratic Steers: {self.ep_harsh_corrections} | Brake-Checks: {self.ep_harsh_brakes} | Cut-offs: {self.ep_aggressive_cutoffs}")
+                print(f"[Phase C] Qwen Social Score: {llm_score} (Added to reward)")
+                
+                reward[0] += llm_score 
+                
+                # DIRECT TensorBoard logging (Bypassing info dict reset issues!)
+                if hasattr(self, 'writer') and self.writer is not None:
+                    self.writer.add_scalar("human_comfort/social_score", llm_score, self.global_step)
+                    self.writer.add_scalar("human_comfort/harsh_jerks", self.ep_harsh_corrections, self.global_step)
+                    self.writer.add_scalar("human_comfort/harsh_brakes", self.ep_harsh_brakes, self.global_step)
+                    self.writer.add_scalar("human_comfort/aggressive_cutoffs", self.ep_aggressive_cutoffs, self.global_step)
+                    self.writer.add_scalar("human_comfort/min_distance_m", self.ep_min_distance, self.global_step)
+                    self.writer.add_scalar("human_comfort/max_close_speed", self.ep_max_close_speed, self.global_step)
+
+                # Cleanly reset trackers for the next spawn
+                delattr(self, "ep_min_distance") 
+            # ----------------------------------------------
+            done = np.logical_or(terminated, truncated)
+
             # Visualization (show first environment)
             if self.visualize and self.visualizer is not None:
                 # Get observation from first env (convert from tensor if needed)
@@ -611,15 +729,15 @@ class PPOTrainer:
                 vis_action = action[0] if self.config.num_envs > 1 else action
                 vis_clipped_action = action_np[0] if self.config.num_envs > 1 else action_np
                 vis_reward = reward[0] if isinstance(reward, (np.ndarray, list)) else reward
-                
+
                 # Extract diagnostic data from first environment
                 from rl_utils import extract_step_data
                 vis_diag = extract_step_data(info, 0) if info else None
-                
+
                 if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward, vis_diag):
                     # User closed window
                     self.visualize = False
-            
+
             # Store in buffer
             self.buffer.add(
                 next_obs,
@@ -629,11 +747,11 @@ class PPOTrainer:
                 next_done,
                 value,
             )
-            
+
             # Update for next iteration - vectorized envs auto-reset, so next_obs_np contains reset obs for done envs
             next_obs = prepare_observation(next_obs_np, self.device)
             next_done = torch.tensor(done, dtype=torch.float32).to(self.device)
-            
+
             # Check for new lap times and log immediately to TensorBoard
             for idx in range(self.config.num_envs):
                 lap_metrics = extract_lap_time_metrics(info, idx)
@@ -648,7 +766,7 @@ class PPOTrainer:
                             self.writer.flush()
                         self.last_seen_lap_counts[idx] = current_lap_count
                         self.last_seen_lap_counts[idx] = current_lap_count
-            
+
             # Video Recording Logic (Env 0 only)
             if self.config.record_videos:
                 if self.recording_state == "WAITING_FOR_EPISODE_START":
@@ -656,7 +774,7 @@ class PPOTrainer:
                         # Start recording next episode
                         # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         filename = f"{self.video_dir}/update_{self.recording_trigger_update}.mp4"
-                        
+
                         # Save model checkpoint for this video
                         model_path = f"{self.model_dir}/update_{self.recording_trigger_update}.pt"
                         torch.save({
@@ -666,32 +784,32 @@ class PPOTrainer:
                             "optimizer_state_dict": self.optimizer.state_dict(),
                         }, model_path)
                         print(f"Saved model checkpoint for video to {model_path}")
-                        
+
                         # Save metadata file
                         metadata_path = f"{self.video_dir}/update_{self.recording_trigger_update}.txt"
                         with open(metadata_path, "w") as f:
                             f.write(self.recording_metadata)
                         print(f"Saved metadata to {metadata_path}")
 
-                        # On Windows/Unity, path might need to be absolute or relative to project. 
+                        # On Windows/Unity, path might need to be absolute or relative to project.
                         # We pass absolute path.
                         self.current_video_filename = filename
                         self.send_env_message(0, {"msg_type": "record_video", "filename": filename})
                         self.recording_state = "RECORDING"
                         print(f"Started recording video: {filename}")
-                
+
                 elif self.recording_state == "RECORDING":
                     if done[0]:
                         # Stop recording
                         self.send_env_message(0, {"msg_type": "stop_recording"})
                         self.recording_state = "PROCESSING"
                         print(f"Stopped recording video. Processing...")
-                        
+
                         # Process in background or main thread? Main thread for simplicity.
                         # Wait a bit for file to be written?
                         # Unity Recorder might take a moment.
                         # We'll process it in the next update or immediately?
-                        # Let's try immediately but with a small delay if needed, 
+                        # Let's try immediately but with a small delay if needed,
                         # or just log it.
                         self.process_and_log_video(self.current_video_filename, self.global_step)
                         self.recording_state = "IDLE"
@@ -701,29 +819,29 @@ class PPOTrainer:
                     metrics = extract_episode_metrics(info, idx, d)
                     if metrics:
                         self.episode_metrics.add_metrics(metrics)
-                        
+
                         # Update curriculum based on episode outcome
                         if self.config.curriculum_learning:
                             # Use lap_count_proximity for curriculum learning if available
                             lap_count = metrics.get('lap_count_proximity', metrics.get('lap_count', 0))
                             lap_time = metrics.get('lap_time', 0.0)
                             episode_length = metrics.get('length', 0)
-                            
+
                             curriculum_status = self.curriculum.update(lap_count, lap_time, episode_length)
-                            
+
                             # If speed changed, update environment configuration
                             if curriculum_status.get('speed_changed', False):
                                 new_speed = curriculum_status['new_speed']
                                 print(f"\n[Curriculum] Speed adjusted: {curriculum_status['old_speed']:.2f} -> {new_speed:.2f} m/s")
                                 print(f"[Curriculum] Reason: {curriculum_status['reason']}")
-                                
+
                                 # Note: We can't directly update running environments' max_speed,
                                 # but the change will take effect on next episode reset
                                 # For now, we'll log it and environments will get updated on reset
-                    
+
                     # Reset lap count tracking when episode ends
                     self.last_seen_lap_counts[idx] = 0
-        
+
         # Compute returns and advantages
         with torch.no_grad():
             next_value = self.agent.get_value(next_obs).reshape(1, -1)
@@ -733,9 +851,9 @@ class PPOTrainer:
                 self.config.gamma,
                 self.config.gae_lambda,
             )
-        
+
         return returns, advantages
-    
+
     def update_policy(self, returns, advantages):
         """Update policy using PPO"""
         # Flatten batch
@@ -745,43 +863,43 @@ class PPOTrainer:
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = self.buffer.values.reshape(-1)
-        
+
         # Optimize policy for K epochs
         clipfracs = []
         for epoch in range(self.config.update_epochs):
             # Shuffle indices
             b_inds = np.arange(self.batch_size)
             np.random.shuffle(b_inds)
-            
+
             for start in range(0, self.batch_size, self.minibatch_size):
                 end = start + self.minibatch_size
                 mb_inds = b_inds[start:end]
-                
+
                 # Get new action probabilities and values
                 _, newlogprob, entropy, newvalue = self.agent.get_action_and_value(
                     b_obs[mb_inds], b_actions[mb_inds]
                 )
-                
+
                 # Policy loss
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
-                
+
                 # Track clipping fraction
                 with torch.no_grad():
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > self.config.clip_coef).float().mean().item()]
-                
+
                 # Normalize advantages
                 mb_advantages = b_advantages[mb_inds]
                 if self.config.normalize_advantages:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-                
+
                 # PPO policy loss
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.config.clip_coef, 1 + self.config.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-                
+
                 # Value loss
                 newvalue = newvalue.view(-1)
                 if self.config.clip_vloss:
@@ -796,24 +914,24 @@ class PPOTrainer:
                     v_loss = 0.5 * v_loss_max.mean()
                 else:
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
-                
+
                 # Entropy loss
                 entropy_loss = entropy.mean()
-                
+
                 # Total loss
                 loss = pg_loss - self.config.ent_coef * entropy_loss + v_loss * self.config.vf_coef
-                
+
                 # Optimize
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.agent.parameters(), self.config.max_grad_norm)
                 self.optimizer.step()
-        
+
         # Compute explained variance
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-        
+
         return {
             "pg_loss": pg_loss.item(),
             "v_loss": v_loss.item(),
@@ -823,7 +941,7 @@ class PPOTrainer:
             "clipfrac": np.mean(clipfracs) if len(clipfracs) > 0 else 0.0,
             "explained_variance": explained_var,
         }
-    
+
     def train(self):
         """Main training loop"""
         print(f"\n{'='*60}")
@@ -838,25 +956,25 @@ class PPOTrainer:
         print(f"Tensorboard logs: {self.log_dir}")
         print(f"Model checkpoints: {self.model_dir}")
         print(f"{'='*60}\n")
-        
+
         if self.config.model_path:
             self.load_model(self.config.model_path)
-            
+
         start_time = time.time()
         num_updates = self.config.total_timesteps // self.batch_size
-        
+
         for update in range(self.update + 1, num_updates + 1):
             self.update = update
-            
+
             # Collect rollouts
             returns, advantages = self.collect_rollouts()
-            
+
             # Update policy
             train_stats = self.update_policy(returns, advantages)
-            
+
             # Log episode metrics to TensorBoard
             self.episode_metrics.log_to_tensorboard(self.writer, self.global_step)
-            
+
             # Log training stats
             self.writer.add_scalar("charts/learning_rate", self.optimizer.param_groups[0]["lr"], self.global_step)
             self.writer.add_scalar("losses/value_loss", train_stats["v_loss"], self.global_step)
@@ -866,7 +984,7 @@ class PPOTrainer:
             self.writer.add_scalar("losses/approx_kl", train_stats["approx_kl"], self.global_step)
             self.writer.add_scalar("losses/clipfrac", train_stats["clipfrac"], self.global_step)
             self.writer.add_scalar("losses/explained_variance", train_stats["explained_variance"], self.global_step)
-            
+
             # Log curriculum learning stats
             if self.config.curriculum_learning:
                 curriculum_stats = self.curriculum.get_stats()
@@ -875,30 +993,30 @@ class PPOTrainer:
                 self.writer.add_scalar("curriculum/consecutive_failures", curriculum_stats['consecutive_failures'], self.global_step)
                 self.writer.add_scalar("curriculum/recent_success_rate", curriculum_stats['recent_success_rate'], self.global_step)
                 self.writer.add_scalar("curriculum/total_laps_completed", curriculum_stats['total_laps_completed'], self.global_step)
-            
+
             # Flush to ensure data is written to disk
             self.writer.flush()
-            
+
             # Print progress
             sps = int(self.global_step / (time.time() - start_time))
             progress_str = f"Update {update}/{num_updates} | Step {self.global_step} | SPS: {sps}"
             print(progress_str)
-            
+
             # Collect metadata for recording
             metadata_lines = [progress_str]
-            
+
             # Print episode metrics summary
             summary = self.episode_metrics.print_summary()
             if summary:
                 print(summary)
                 metadata_lines.append(summary)
-            
+
             # Print training stats
             train_stats_str = f"  PG Loss: {train_stats['pg_loss']:.4f} | V Loss: {train_stats['v_loss']:.4f}\n" \
                               f"  Entropy: {train_stats['entropy_loss']:.4f} | KL: {train_stats['approx_kl']:.4f}"
             print(train_stats_str)
             metadata_lines.append(train_stats_str)
-            
+
             # Print curriculum stats
             if self.config.curriculum_learning:
                 curriculum_stats = self.curriculum.get_stats()
@@ -907,17 +1025,17 @@ class PPOTrainer:
                            f"Total Laps: {curriculum_stats['total_laps_completed']}"
                 print(curr_str)
                 metadata_lines.append(curr_str)
-            
+
             # Trigger video recording for next episode
             if self.config.record_videos and self.recording_state == "IDLE":
                 self.recording_state = "WAITING_FOR_EPISODE_START"
                 self.recording_trigger_update = update
                 self.recording_metadata = "\n".join(metadata_lines)
                 print("Video recording requested for next episode.")
-            
+
             # Reset episode metrics for next update
             self.episode_metrics.reset()
-            
+
             # Save model
             # if update % self.config.save_model_freq == 0:
             #     model_path = f"{self.model_dir}/ppo_donkey_update{update}.pt"
@@ -928,7 +1046,7 @@ class PPOTrainer:
             #         "optimizer_state_dict": self.optimizer.state_dict(),
             #     }, model_path)
             #     print(f"  Saved model to {model_path}")
-        
+
         # Save final model
         final_model_path = f"{self.model_dir}/ppo_donkey_final.pt"
         torch.save({
@@ -938,17 +1056,17 @@ class PPOTrainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
         }, final_model_path)
         print(f"\nSaved final model to {final_model_path}")
-        
+
         self.envs.close()
         if self.visualizer is not None:
             self.visualizer.close()
         self.writer.flush()
         self.writer.close()
-        
+
         total_time = time.time() - start_time
         print(f"\nTraining complete! Total time: {total_time:.2f}s")
         print(f"Average SPS: {int(self.config.total_timesteps / total_time)}")
-    
+
     def playback(self):
         """Run playback of a trained model"""
         print(f"\n{'='*60}")
@@ -959,20 +1077,20 @@ class PPOTrainer:
         print(f"Deterministic: {self.config.deterministic}")
         print(f"Device: {self.device}")
         print(f"{'='*60}\n")
-        
+
         # Load the model
         if self.config.model_path:
             self.load_model(self.config.model_path)
         else:
             raise ValueError("model_path must be specified for playback mode")
-        
+
         # Set agent to evaluation mode
         self.agent.eval()
-        
+
         # Episode tracking
         episode_count = 0
         episode_metrics = EpisodeMetricsLogger()
-        
+
         # Reset environment
         reset_result = self.envs.reset()
         if isinstance(reset_result, tuple):
@@ -980,14 +1098,14 @@ class PPOTrainer:
         else:
             obs = reset_result
         obs = prepare_observation(obs, self.device)
-        
+
         step_count = 0
         start_time = time.time()
-        
+
         # Run episodes
         while episode_count < self.config.num_episodes:
             step_count += self.config.num_envs
-            
+
             # Get action from policy
             with torch.no_grad():
                 if self.config.deterministic:
@@ -997,14 +1115,14 @@ class PPOTrainer:
                 else:
                     # Sample from distribution
                     action, _, _, _ = self.agent.get_action_and_value(obs)
-            
+
             # Convert and clip actions
             action_np = clip_action_to_space(action, self.envs.single_action_space)
-            
+
             # Step environment
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action_np)
             done = np.logical_or(terminated, truncated)
-            
+
             # Check if any environment is done (episode ended/car reset)
             if np.any(done):
                 # Log episode metrics and check for completion
@@ -1014,24 +1132,24 @@ class PPOTrainer:
                         if metrics:
                             episode_metrics.add_metrics(metrics)
                             episode_count += 1
-                            
+
                             # Print detailed episode summary
                             print(f"\n{'='*60}")
                             print(f"Episode {episode_count}/{self.config.num_episodes} Complete")
                             print(f"{'='*60}")
-                            
+
                             # Core metrics
                             if 'reward' in metrics:
                                 print(f"  Return: {metrics['reward']:.2f}")
                             if 'length' in metrics:
                                 print(f"  Length: {metrics['length']} steps")
-                            
+
                             # Lap metrics
                             if 'lap_count' in metrics:
                                 print(f"  Laps Completed: {metrics['lap_count']}")
                             if 'lap_time' in metrics:
                                 print(f"  Last Lap Time: {metrics['lap_time']:.2f}s")
-                            
+
                             # Driving performance
                             if 'cte' in metrics:
                                 print(f"  Avg Cross-Track Error: {metrics['cte']:.3f}")
@@ -1045,13 +1163,13 @@ class PPOTrainer:
                                 if 'off_track' in metrics:
                                     off_track_status = "Yes" if metrics['off_track'] else "No"
                                     print(f"  Off-Track: {off_track_status}")
-                            
+
                             print(f"{'='*60}\n")
-                            
+
                             # Check if we've completed all episodes
                             if episode_count >= self.config.num_episodes:
                                 break
-                
+
                 # Break if all requested episodes are done
                 if episode_count >= self.config.num_episodes:
                     break
@@ -1064,19 +1182,19 @@ class PPOTrainer:
                 vis_action = action[0] if self.config.num_envs > 1 else action
                 vis_clipped_action = action_np[0] if self.config.num_envs > 1 else action_np
                 vis_reward = reward[0] if isinstance(reward, (np.ndarray, list)) else reward
-                
+
                 # Extract diagnostic data from first environment
                 from rl_utils import extract_step_data
                 vis_diag = extract_step_data(info, 0) if info else None
-                
+
                 if not self.visualizer.update(vis_obs, vis_action, vis_clipped_action, vis_reward, vis_diag):
                     # User closed window
                     print("\nVisualization window closed. Stopping playback.")
                     break
-            
+
             # Update observation - vectorized envs auto-reset, so next_obs_np contains reset obs for done envs
             obs = prepare_observation(next_obs_np, self.device)
-        
+
         # Print final summary
         total_time = time.time() - start_time
         print(f"\n{'='*60}")
@@ -1087,10 +1205,10 @@ class PPOTrainer:
         print(f"Total Time: {total_time:.2f}s")
         print(f"Average SPS: {int(step_count / total_time) if total_time > 0 else 0}")
         print(f"{'='*60}")
-        
+
         # Print detailed aggregate statistics
         metrics_dict = episode_metrics.get_metrics_dict()
-        
+
         # Episode Performance
         if len(metrics_dict['episode_rewards']) > 0:
             rewards = np.array(metrics_dict['episode_rewards'])
@@ -1100,7 +1218,7 @@ class PPOTrainer:
                   f"Min={np.min(rewards):.2f}, Max={np.max(rewards):.2f}")
             print(f"  Length:  Mean={np.mean(lengths):.1f}, Std={np.std(lengths):.1f}, "
                   f"Min={int(np.min(lengths))}, Max={int(np.max(lengths))}")
-        
+
         # Lap Performance
         if len(metrics_dict['episode_lap_counts']) > 0:
             lap_counts = np.array(metrics_dict['episode_lap_counts'])
@@ -1109,13 +1227,13 @@ class PPOTrainer:
             print(f"  Total Laps Completed: {total_laps}")
             print(f"  Avg Laps per Episode: {np.mean(lap_counts):.2f}")
             print(f"  Episodes with Laps: {np.count_nonzero(lap_counts)}/{len(lap_counts)}")
-            
+
             if len(metrics_dict['episode_lap_times']) > 0:
                 lap_times = np.array(metrics_dict['episode_lap_times'])
                 print(f"  Best Lap Time: {np.min(lap_times):.2f}s")
                 print(f"  Mean Lap Time: {np.mean(lap_times):.2f}s ± {np.std(lap_times):.2f}s")
                 print(f"  Worst Lap Time: {np.max(lap_times):.2f}s")
-        
+
         # Driving Performance
         if len(metrics_dict['episode_cte']) > 0:
             cte = np.array(metrics_dict['episode_cte'])
@@ -1125,11 +1243,11 @@ class PPOTrainer:
                   f"Min={np.min(cte):.3f}, Max={np.max(cte):.3f}")
             print(f"  Speed: Mean={np.mean(speeds):.2f}, Std={np.std(speeds):.2f}, "
                   f"Min={np.min(speeds):.2f}, Max={np.max(speeds):.2f}")
-            
+
             if len(metrics_dict['episode_forward_vel']) > 0:
                 fwd_vel = np.array(metrics_dict['episode_forward_vel'])
                 print(f"  Forward Velocity: Mean={np.mean(fwd_vel):.2f}, Std={np.std(fwd_vel):.2f}")
-        
+
         # Collision Statistics
         if len(metrics_dict['episode_hits']) > 0:
             hits = np.array(metrics_dict['episode_hits'])
@@ -1138,25 +1256,25 @@ class PPOTrainer:
             print(f"\nCollision Statistics:")
             print(f"  Collision Rate: {collision_rate:.1f}%")
             print(f"  Episodes with Collisions: {num_collisions}/{len(hits)}")
-        
+
         # Off-Track Statistics
         if 'episode_termination_reasons' in metrics_dict:
             reasons = metrics_dict['episode_termination_reasons']
             # Count off_track occurrences (either as boolean flag or termination reason)
             # Note: metrics_dict doesn't explicitly store 'episode_off_track' list in EpisodeMetricsLogger
-            # but we can infer from termination reasons if that's how it's tracked, 
+            # but we can infer from termination reasons if that's how it's tracked,
             # OR we should update EpisodeMetricsLogger to store off_track explicitly if needed.
             # Looking at EpisodeMetricsLogger, it stores 'episode_termination_reasons'.
-            
+
             num_off_track = reasons.count("off_track")
             off_track_rate = (num_off_track / len(reasons)) * 100 if len(reasons) > 0 else 0.0
-            
+
             print(f"\nOff-Track Statistics:")
             print(f"  Off-Track Rate: {off_track_rate:.1f}%")
             print(f"  Episodes Off-Track: {num_off_track}/{len(reasons)}")
-        
+
         print(f"{'='*60}\n")
-        
+
         # Cleanup
         self.envs.close()
         if self.visualizer is not None:
@@ -1165,14 +1283,14 @@ class PPOTrainer:
 
 def main():
     parser = argparse.ArgumentParser(description="PPO training/playback with PufferLib")
-    
+
     # Mode selection
     parser.add_argument("--playback", action="store_true", help="run playback mode instead of training")
     parser.add_argument("--model-path", type=str, help="path to saved model checkpoint (required for playback, optional for resuming training)")
     parser.add_argument("--num-episodes", type=int, default=10, help="number of episodes to run in playback mode")
     parser.add_argument("--deterministic", action="store_true", default=True, help="use deterministic policy (mean action) in playback")
     parser.add_argument("--stochastic", dest="deterministic", action="store_false", help="use stochastic policy (sample actions) in playback")
-    
+
     # Environment
     parser.add_argument("--env-name", type=str, default="donkey-circuit-launch-track-v0")
     parser.add_argument("--num-envs", type=int, default=4)
@@ -1181,7 +1299,7 @@ def main():
     parser.add_argument("--max-cte", type=float, default=2.0, help="maximum cross-track error before termination (lower = stricter)")
     parser.add_argument("--frame-skip", type=int, default=1, help="number of frames to skip between actions")
     parser.add_argument("--no-launch", action="store_true", help="do not launch the simulator (connect to existing instance)")
-    
+
     # Curriculum Learning
     parser.add_argument("--curriculum-learning", action="store_true", help="enable curriculum learning for speed")
     parser.add_argument("--curriculum-initial-speed", type=float, default=0.25, help="initial max speed for curriculum (m/s)")
@@ -1191,42 +1309,42 @@ def main():
     parser.add_argument("--curriculum-success-threshold", type=int, default=3, help="consecutive laps needed to increase speed")
     parser.add_argument("--curriculum-failure-threshold", type=int, default=5, help="failed episodes before decreasing speed")
     parser.add_argument("--curriculum-min-lap-time", type=float, default=30.0, help="minimum lap time to count as success (seconds)")
-    
+
     # Random Spawn
     parser.add_argument("--random-spawn", action="store_true", help="enable random spawning anywhere on track")
     parser.add_argument("--random-spawn-max-cte-offset", type=float, default=1.0, help="max lateral offset from centerline (meters)")
     parser.add_argument("--random-spawn-max-rotation-offset", type=float, default=15.0, help="max rotation offset from tangent (degrees)")
-    
+
     # Action Smoothing & Control
     parser.add_argument("--action-smoothing", action="store_true", default=False, help="enable action smoothing (default: False)")
     parser.add_argument("--no-action-smoothing", dest="action_smoothing", action="store_false", help="disable action smoothing")
     parser.add_argument("--action-smoothing-sigma", type=float, default=1.0, help="sigma for Gaussian smoothing")
     parser.add_argument("--action-history-len", type=int, default=120, help="length of action history for smoothing")
     parser.add_argument("--min-throttle", type=float, default=0.0, help="minimum throttle value")
-    
+
     # Reward Weights
     parser.add_argument("--reward-speed-weight", type=float, default=1.0, help="weight for speed reward component")
     parser.add_argument("--reward-centering-weight", type=float, default=1.0, help="weight for centering reward component")
     parser.add_argument("--reward-lin-combination", action="store_true", help="use linear combination of reward terms")
     parser.add_argument("--centering-setpoint-x", type=float, default=0.3, help="x-position for spline points 1 and 3 (0.0 to 1.0)")
     parser.add_argument("--centering-setpoint-y", type=float, default=0.8, help="y-value for spline points 1 and 3 (0.0 to 1.0)")
-    
+
     # Training
     parser.add_argument("--total-timesteps", type=int, default=1000000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--num-steps", type=int, default=2048)
-    
+
     # Logging
     parser.add_argument("--log-dir", type=str, default="./output/tensorboard", help="tensorboard log directory")
     parser.add_argument("--model-dir", type=str, default="./output/models", help="model checkpoint directory")
-    
+
     # Misc
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--visualize", action="store_true", help="enable pygame visualization window")
     parser.add_argument("--record-videos", action="store_true", help="enable video recording of episodes")
     args = parser.parse_args()
-    
+
     # In playback mode, default to 1 environment if not explicitly specified
     num_envs = args.num_envs
     if args.playback and args.num_envs == 4:  # 4 is the default
@@ -1235,7 +1353,7 @@ def main():
         if '--num-envs' not in sys.argv:
             num_envs = 1
             print("Playback mode: defaulting to 1 environment (use --num-envs to override)")
-    
+
     # Create config
     config = PPOConfig(
         env_name=args.env_name,
@@ -1280,10 +1398,10 @@ def main():
         launch_sim=not args.no_launch,
     )
 
-    
+
     # Create trainer
     trainer = PPOTrainer(config)
-    
+
     # Run playback or training
     if config.playback:
         trainer.playback()
@@ -1293,4 +1411,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
