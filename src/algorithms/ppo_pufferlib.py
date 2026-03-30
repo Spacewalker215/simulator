@@ -148,11 +148,11 @@ class PPOConfig:
     # Video Recording
     record_videos: bool = False  # Enable video recording of episodes during training
 
-
     # Misc
     seed: int = 1
     torch_deterministic: bool = True
     visualize: bool = False
+    save_model_freq: int = 50  # Save model every N updates
 
     # Playback mode
     playback: bool = False
@@ -1036,26 +1036,28 @@ class PPOTrainer:
             # Reset episode metrics for next update
             self.episode_metrics.reset()
 
-            # Save model
-            # if update % self.config.save_model_freq == 0:
-            #     model_path = f"{self.model_dir}/ppo_donkey_update{update}.pt"
-            #     torch.save({
-            #         "update": update,
-            #         "global_step": self.global_step,
-            #         "model_state_dict": self.agent.state_dict(),
-            #         "optimizer_state_dict": self.optimizer.state_dict(),
-            #     }, model_path)
-            #     print(f"  Saved model to {model_path}")
+            # Save model periodically
+            if update % self.config.save_model_freq == 0:
+                os.makedirs(self.model_dir, exist_ok=True)
+                model_path = f"{self.model_dir}/qwen_social_update_{update}.pt"
+                torch.save({
+                    "update": update,
+                    "global_step": self.global_step,
+                    "model_state_dict": self.agent.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                }, model_path)
+                print(f"  [Checkpoint] Saved periodic model to {model_path}")
 
         # Save final model
-        final_model_path = f"{self.model_dir}/ppo_donkey_final.pt"
+        os.makedirs(self.model_dir, exist_ok=True)
+        final_model_path = f"{self.model_dir}/qwen_social_policy_final.pt"
         torch.save({
             "update": self.update,
             "global_step": self.global_step,
             "model_state_dict": self.agent.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }, final_model_path)
-        print(f"\nSaved final model to {final_model_path}")
+        print(f"\n✅ SUCCESS: Coadaptive AI Brain saved to {final_model_path}\n")
 
         self.envs.close()
         if self.visualizer is not None:
@@ -1333,6 +1335,7 @@ def main():
     parser.add_argument("--total-timesteps", type=int, default=1000000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--num-steps", type=int, default=2048)
+    parser.add_argument("--save-model-freq", type=int, default=50, help="save model every N updates")
 
     # Logging
     parser.add_argument("--log-dir", type=str, default="./output/tensorboard", help="tensorboard log directory")
@@ -1368,6 +1371,7 @@ def main():
         device=args.device,
         seed=args.seed,
         visualize=args.visualize,
+        save_model_freq=args.save_model_freq,
         playback=args.playback,
         model_path=args.model_path,
         num_episodes=args.num_episodes,
