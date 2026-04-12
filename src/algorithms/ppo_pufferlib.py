@@ -681,19 +681,29 @@ class PPOTrainer:
             if 'pos' in info_dict:
                 ego_x, ego_y, ego_z = info_dict['pos']
                 
-                # Check distance to the moving car
+                # --- DIAGNOSTIC PRINT ---
+                print(f" DEBUG -> Ego Car X: {ego_x:.2f}, Z: {ego_z:.2f}")
+                
+                # Check moving car
                 if 'moving_car_x' in info_dict and 'moving_car_z' in info_dict:
                     obs_x = info_dict['moving_car_x']
                     obs_z = info_dict['moving_car_z']
                     dist_to_moving = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
                     current_distance = min(current_distance, dist_to_moving)
-                
-                # Check distance to the broken car
+                    print(f"    Moving Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_moving:.2f}")
+                else:
+                    print("    WARNING: Python is NOT receiving 'moving_car_x'")
+
+                # Check broken car
                 if 'broken_car_x' in info_dict and 'broken_car_z' in info_dict:
                     obs_x = info_dict['broken_car_x']
                     obs_z = info_dict['broken_car_z']
                     dist_to_broken = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
                     current_distance = min(current_distance, dist_to_broken)
+                    print(f"    Broken Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_broken:.2f}")
+                else:
+                    print("    WARNING: Python is NOT receiving 'broken_car_x'")
+                # ------------------------
             
             self.ep_min_distance = min(self.ep_min_distance, current_distance)
             
