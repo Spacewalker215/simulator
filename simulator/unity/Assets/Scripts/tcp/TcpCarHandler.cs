@@ -268,6 +268,8 @@ namespace tk
                 json.AddField("debug_moving_status", "FAILED_TO_FIND_GAMEOBJECT");
             }
             // -----------------------------------------
+
+            Debug.Log("RAW JSON PAYLOAD: " + json.ToString());
             
             client.SendMsg(json);
         }
