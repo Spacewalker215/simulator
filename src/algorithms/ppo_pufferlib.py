@@ -674,17 +674,25 @@ class PPOTrainer:
                 self.ep_aggressive_cutoffs += 1
             self.last_cte = current_cte
 
-            # 5. Track Min Distance & Fly-By Speed (Using the Virtual Obstacle)
-            VIRTUAL_CAR_X = 15.0 
-            VIRTUAL_CAR_Z = 20.0
+            # 5. Track Min Distance & Fly-By Speed (Using Real-Time Obstacles)
             current_distance = 10.0
-
-            print("\n--- RAW UNITY DATA ---")
-            print(info_dict.keys())
             
             if 'pos' in info_dict:
                 ego_x, ego_y, ego_z = info_dict['pos']
-                current_distance = math.sqrt((ego_x - VIRTUAL_CAR_X)**2 + (ego_z - VIRTUAL_CAR_Z)**2)
+                
+                # Check distance to the moving car
+                if 'moving_car_x' in info_dict and 'moving_car_z' in info_dict:
+                    obs_x = info_dict['moving_car_x']
+                    obs_z = info_dict['moving_car_z']
+                    dist_to_moving = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
+                    current_distance = min(current_distance, dist_to_moving)
+                
+                # Check distance to the broken car
+                if 'broken_car_x' in info_dict and 'broken_car_z' in info_dict:
+                    obs_x = info_dict['broken_car_x']
+                    obs_z = info_dict['broken_car_z']
+                    dist_to_broken = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
+                    current_distance = min(current_distance, dist_to_broken)
             
             self.ep_min_distance = min(self.ep_min_distance, current_distance)
             
