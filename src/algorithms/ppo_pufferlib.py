@@ -643,6 +643,11 @@ class PPOTrainer:
             if not isinstance(info_dict, dict):
                 info_dict = {}
 
+            if 'debug_broken_status' in info_dict:
+                print(f"UNITY STATUS -> Broken: {info_dict['debug_broken_status']} | Moving: {info_dict['debug_moving_status']}")
+            else:
+                print("UNITY STATUS -> CRITICAL: Custom C# code is missing entirely! You are running an old build.")
+
             # 1. Initialize trackers for a new episode
             if not hasattr(self, "ep_min_distance"):
                 self.ep_min_distance = 10.0
