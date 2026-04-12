@@ -51,16 +51,17 @@ client = OpenAI(
 
 def get_social_compliance_score(min_distance, harsh_corrections, harsh_brakes, aggressive_cutoffs, max_close_speed):
     prompt = (
-        f"The robot car completed a maneuver. Minimum distance to the obstacle was {min_distance:.1f} meters. "
-        f"The maximum speed while passing the obstacle was {max_close_speed:.1f} m/s. "
+        f"The autonomous vehicle completed a maneuver. The minimum distance to the nearest vehicle was {min_distance:.1f} meters. "
+        f"The maximum speed while passing was {max_close_speed:.1f} m/s. "
         f"There were {harsh_corrections} erratic steering twitches, {harsh_brakes} harsh brake-checks, "
         f"and {aggressive_cutoffs} aggressive lateral cut-offs. "
-        f"As an external observer or driver sharing the road, rate the car's social compliance and safety from -1.0 (dangerous/erratic) to 1.0 (polite/predictable). Respond with ONLY the number."
+        f"As an external observer sharing the road, rate the car's social compliance and safety from -1.0 (dangerous/erratic) to 1.0 (polite/predictable). "
+        f"Respond with ONLY the number and no other text."
     )
 
     try:
         response = client.chat.completions.create(
-            model="Qwen/Qwen2.5-14B-Instruct",
+            model="Qwen/Qwen2.5-7B-Instruct",
             messages=[
                 {"role": "system", "content": "You are a human evaluating a robot car's etiquette."},
                 {"role": "user", "content": prompt}
