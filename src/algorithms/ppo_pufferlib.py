@@ -678,6 +678,9 @@ class PPOTrainer:
             VIRTUAL_CAR_X = 15.0 
             VIRTUAL_CAR_Z = 20.0
             current_distance = 10.0
+
+            print("\n--- RAW UNITY DATA ---")
+            print(info_dict.keys())
             
             if 'pos' in info_dict:
                 ego_x, ego_y, ego_z = info_dict['pos']
