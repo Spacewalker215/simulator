@@ -244,12 +244,16 @@ namespace tk
             }
             
             // --- CUSTOM OBSTACLE TRACKING FOR QWEN ---
-            // Divide by 8.0f because this simulator scales down all Python coordinates by 8
             GameObject brokenCar = GameObject.Find("brokenCar");
             if (brokenCar != null)
             {
                 json.AddField("broken_car_x", brokenCar.transform.position.x / 8.0f);
                 json.AddField("broken_car_z", brokenCar.transform.position.z / 8.0f);
+                json.AddField("debug_broken_status", "SUCCESS");
+            }
+            else 
+            {
+                json.AddField("debug_broken_status", "FAILED_TO_FIND_GAMEOBJECT");
             }
 
             GameObject movingCar = GameObject.Find("secondCar"); 
@@ -257,6 +261,11 @@ namespace tk
             {
                 json.AddField("moving_car_x", movingCar.transform.position.x / 8.0f);
                 json.AddField("moving_car_z", movingCar.transform.position.z / 8.0f);
+                json.AddField("debug_moving_status", "SUCCESS");
+            }
+            else 
+            {
+                json.AddField("debug_moving_status", "FAILED_TO_FIND_GAMEOBJECT");
             }
             // -----------------------------------------
             
