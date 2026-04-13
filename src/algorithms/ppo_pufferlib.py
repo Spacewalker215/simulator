@@ -57,6 +57,7 @@ def get_social_compliance_score(min_distance, harsh_corrections, harsh_brakes, a
         f"The maximum speed while passing was {max_close_speed:.1f} m/s. "
         f"There were {harsh_corrections} erratic steering twitches, {harsh_brakes} harsh brake-checks, "
         f"and {aggressive_cutoffs} aggressive lateral cut-offs. "
+        f"IMPORTANT: The vehicle is on a race track. If the maximum speed is less than 0.5 m/s, the car is dangerously blocking traffic and should receive a heavily negative score. "
         f"As an external observer sharing the road, rate the car's social compliance and safety from -1.0 (dangerous/erratic) to 1.0 (polite/predictable). "
         f"Respond with ONLY the number and no other text."
     )
