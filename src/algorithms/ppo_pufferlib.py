@@ -707,7 +707,7 @@ class PPOTrainer:
                     obs_z = info_dict['moving_car_z']
                     dist_to_moving = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
                     current_distance = min(current_distance, dist_to_moving)
-                    print(f"    Moving Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_moving:.2f}")
+                    # print(f"    Moving Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_moving:.2f}")
                 else:
                     print("    WARNING: Python is NOT receiving 'moving_car_x'")
 
@@ -717,7 +717,7 @@ class PPOTrainer:
                     obs_z = info_dict['broken_car_z']
                     dist_to_broken = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
                     current_distance = min(current_distance, dist_to_broken)
-                    print(f"    Broken Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_broken:.2f}")
+                    # print(f"    Broken Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_broken:.2f}")
                 else:
                     print("    WARNING: Python is NOT receiving 'broken_car_x'")
                 # ------------------------
