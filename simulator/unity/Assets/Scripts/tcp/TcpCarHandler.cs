@@ -80,6 +80,9 @@ namespace tk
 
         void Awake()
         {
+            if (BrokenCarRandomizer.Instance != null) {
+                BrokenCarRandomizer.Instance.RandomizeLocation();
+            }
             car = carObj.GetComponent<ICar>();
             conf = carObj.GetComponent<CarConfig>();
             pm = GameObject.FindFirstObjectByType<PathManager>();
@@ -242,7 +245,7 @@ namespace tk
                 json.AddField("vel_y", velocity.y);
                 json.AddField("vel_z", velocity.z);
             }
-            
+
             // --- CUSTOM OBSTACLE TRACKING FOR QWEN ---
             GameObject brokenCar = GameObject.Find("brokenCar");
             if (brokenCar != null)
@@ -269,8 +272,18 @@ namespace tk
             }
             // -----------------------------------------
 
-            Debug.Log("RAW JSON PAYLOAD: " + json.ToString());
-            
+            // --- THE STRING SMUGGLER ---
+            // We pack all 4 coordinates into a single comma-separated string
+            string radarString = string.Format("{0:F2},{1:F2},{2:F2},{3:F2}", 
+                brokenCar.transform.position.x, 
+                brokenCar.transform.position.z, 
+                movingCar.transform.position.x, 
+                movingCar.transform.position.z);
+
+            // We hijack the "hit" field which Python usually ignores
+            json.AddField("hit", radarString);
+            // --------------------------
+
             client.SendMsg(json);
         }
 
@@ -823,6 +836,10 @@ namespace tk
                         car.RequestSteering(0.0f);
                         car.RequestThrottle(0.0f);
                         car.RequestFootBrake(10.0f);
+                    }
+
+                    if (BrokenCarRandomizer.Instance != null) {
+                        BrokenCarRandomizer.Instance.RandomizeLocation();
                     }
 
                     bResetCar = false;
