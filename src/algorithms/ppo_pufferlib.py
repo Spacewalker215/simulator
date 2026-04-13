@@ -647,16 +647,14 @@ class PPOTrainer:
 
             # --- 3. Radar Trojan Horse Unpacking ---
             # We do this immediately so all downstream logic has the coordinates
-            radar_data = info_dict.get('hit', "none")
-            if radar_data != "none" and "," in radar_data:
-                try:
-                    coords = [float(x) for x in radar_data.split(',')]
-                    info_dict['broken_car_x'] = coords[0]
-                    info_dict['broken_car_z'] = coords[1]
-                    info_dict['moving_car_x'] = coords[2]
-                    info_dict['moving_car_z'] = coords[3]
-                except (ValueError, IndexError):
-                    pass
+            if 'gyro' in info_dict and 'accel' in info_dict:
+                # gyro is a tuple of (gyro_x, gyro_y, gyro_z)
+                info_dict['broken_car_x'] = info_dict['gyro'][0]
+                info_dict['broken_car_z'] = info_dict['gyro'][1]
+                
+                # accel is a tuple of (accel_x, accel_y, accel_z)
+                info_dict['moving_car_x'] = info_dict['accel'][0]
+                info_dict['moving_car_z'] = info_dict['accel'][1]
 
             # --- PHASE B & C: COADAPTIVE ALIGNMENT LOOP (Social Compliance) ---
             if not isinstance(info_dict, dict):
