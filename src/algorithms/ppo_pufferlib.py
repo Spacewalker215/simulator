@@ -638,15 +638,27 @@ class PPOTrainer:
 
             # Step environment
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action_np)
-            # --- PHASE B & C: COADAPTIVE ALIGNMENT LOOP (Social Compliance) ---
+
+            # --- Extract and Prepare Info Dictionary ---
+            # Standardize the info dict once at the top
             info_dict = info[0] if isinstance(info, (list, tuple, np.ndarray)) and len(info) > 0 else info
+
+            # --- 3. Radar Trojan Horse Unpacking ---
+            # We do this immediately so all downstream logic has the coordinates
+            radar_data = info_dict.get('hit', "none")
+            if radar_data != "none" and "," in radar_data:
+                try:
+                    coords = [float(x) for x in radar_data.split(',')]
+                    info_dict['broken_car_x'] = coords[0]
+                    info_dict['broken_car_z'] = coords[1]
+                    info_dict['moving_car_x'] = coords[2]
+                    info_dict['moving_car_z'] = coords[3]
+                except (ValueError, IndexError):
+                    pass
+
+            # --- PHASE B & C: COADAPTIVE ALIGNMENT LOOP (Social Compliance) ---
             if not isinstance(info_dict, dict):
                 info_dict = {}
-
-            if 'debug_broken_status' in info_dict:
-                print(f"UNITY STATUS -> Broken: {info_dict['debug_broken_status']} | Moving: {info_dict['debug_moving_status']}")
-            else:
-                print("UNITY STATUS -> CRITICAL: Custom C# code is missing entirely! You are running an old build.")
 
             # 1. Initialize trackers for a new episode
             if not hasattr(self, "ep_min_distance"):
@@ -687,7 +699,7 @@ class PPOTrainer:
                 ego_x, ego_y, ego_z = info_dict['pos']
                 
                 # --- DIAGNOSTIC PRINT ---
-                print(f" DEBUG -> Ego Car X: {ego_x:.2f}, Z: {ego_z:.2f}")
+                # print(f" DEBUG -> Ego Car X: {ego_x:.2f}, Z: {ego_z:.2f}")
                 
                 # Check moving car
                 if 'moving_car_x' in info_dict and 'moving_car_z' in info_dict:
@@ -712,9 +724,17 @@ class PPOTrainer:
             
             self.ep_min_distance = min(self.ep_min_distance, current_distance)
             
-            # Fly-By Speed: If we are within 5 meters of the obstacle, how fast are we going?
+            # Fly-By Speed & Dense Proximity Penalty
             if current_distance < 5.0:
                 self.ep_max_close_speed = max(self.ep_max_close_speed, current_speed)
+                
+                # --- NEW: DENSE PROXIMITY PENALTY ---
+                # Subtracts a tiny fraction of reward for EVERY FRAME spent too close.
+                # Formula: At 4.9m = -0.005 penalty. At 1.0m = -0.20 penalty.
+                proximity_penalty = -0.05 * (5.0 - current_distance)
+                
+                # Inject the penalty directly into this frame's reward
+                reward[0] += proximity_penalty
 
             # 6. End of Episode LLM Call & TensorBoard Logging
             is_done = terminated[0] or truncated[0]
