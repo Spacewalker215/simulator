@@ -273,15 +273,22 @@ namespace tk
             // -----------------------------------------
 
             // --- THE STRING SMUGGLER ---
-            // We pack all 4 coordinates into a single comma-separated string
-            string radarString = string.Format("{0:F2},{1:F2},{2:F2},{3:F2}", 
-                brokenCar.transform.position.x, 
-                brokenCar.transform.position.z, 
-                movingCar.transform.position.x, 
-                movingCar.transform.position.z);
+            if (json.HasField("hit")) json.RemoveField("hit");
+            json.AddField("hit", "none");
 
-            // We hijack the "hit" field which Python usually ignores
-            json.AddField("hit", radarString);
+            // 2. Smuggle Broken Car X/Z into the Gyroscope
+            if (json.HasField("gyro_x")) json.RemoveField("gyro_x");
+            json.AddField("gyro_x", brokenCar.transform.position.x);
+
+            if (json.HasField("gyro_y")) json.RemoveField("gyro_y");
+            json.AddField("gyro_y", brokenCar.transform.position.z);
+
+            // 3. Smuggle Moving Car X/Z into the Accelerometer
+            if (json.HasField("accel_x")) json.RemoveField("accel_x");
+            json.AddField("accel_x", movingCar.transform.position.x);
+
+            if (json.HasField("accel_y")) json.RemoveField("accel_y");
+            json.AddField("accel_y", movingCar.transform.position.z);
             // --------------------------
 
             client.SendMsg(json);
