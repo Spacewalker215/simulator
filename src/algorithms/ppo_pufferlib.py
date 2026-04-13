@@ -43,9 +43,11 @@ import re
 import math
 from openai import OpenAI
 
-# Connect to your vLLM server running on TACC via the SSH tunnel
+llm_port = os.getenv("QWEN_PORT", "8000") 
+
+# Connect to LLM using custom port
 client = OpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url=f"http://localhost:{llm_port}/v1",
     api_key="EMPTY"
 )
 
