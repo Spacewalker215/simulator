@@ -715,8 +715,10 @@ class PPOTrainer:
                 steering_i = float(action_np[env_idx][0])
 
                 # ---- Yaw (preferred path for lateral accel) ----
-                # Unity sends yaw either as a scalar field or aggregated with
-                # pitch/roll. Try both shapes.
+                # Preferred: explicit `yaw` or aggregated `euler`.
+                # Fallback: derive heading from velocity direction — robust
+                # as long as the car is actually moving. This avoids a wrapper
+                # patch to add yaw support.
                 yaw_i = None
                 if 'yaw' in info_i:
                     try:
@@ -728,6 +730,20 @@ class PPOTrainer:
                         yaw_i = float(info_i['euler'][1])
                     except (TypeError, IndexError, ValueError):
                         yaw_i = None
+                # Derive from velocity vector if not directly exposed.
+                # Unity frame: X right, Y up, Z forward. Heading in ground
+                # plane = atan2(vx, vz). Only trust it when actually moving,
+                # otherwise atan2 of noise produces garbage yaw rates.
+                if yaw_i is None and 'vel' in info_i:
+                    try:
+                        vel = info_i['vel']
+                        vx = float(vel[0])
+                        vz = float(vel[2])
+                        horiz_speed = math.sqrt(vx * vx + vz * vz)
+                        if horiz_speed > 0.2:
+                            yaw_i = math.degrees(math.atan2(vx, vz)) % 360.0
+                    except (TypeError, IndexError, ValueError):
+                        yaw_i = None
 
                 # Diagnostic dump on the very first step, env 0 only.
                 if env_idx == 0 and not getattr(self, '_telemetry_dumped', False):
@@ -736,9 +752,10 @@ class PPOTrainer:
                     print(f"[TelemetryDiag] speed={speed_i}  cte={cte_i}  "
                           f"yaw={yaw_i}  ego_pos={ego_pos}  obstacles={obstacles}")
                     if yaw_i is None:
-                        print("[TelemetryDiag] WARNING: no 'yaw' field found. "
-                              "Falling back to CTE-rate for lateral accel. "
-                              "Consider extending the wrapper to expose yaw.")
+                        print("[TelemetryDiag] NOTE: yaw not resolvable yet "
+                              "(car probably stationary; will derive from "
+                              "velocity once moving). If this persists after "
+                              "the car starts driving, check the wrapper.")
                     if not obstacles:
                         print("[TelemetryDiag] WARNING: no obstacle positions found.")
                     self._telemetry_dumped = True
