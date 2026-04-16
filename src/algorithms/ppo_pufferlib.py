@@ -664,16 +664,22 @@ class PPOTrainer:
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action_np)
 
             # ============================================================== #
-            #  COADAPTIVE COMFORT LOOP (per-env, dense + sparse)              #
+            #  COADAPTIVE COMFORT LOOP v2 (per-env, dense + sparse)           #
             #                                                                 #
-            #  Replaces the original single-env inline tracker. Now:          #
-            #    - one ComfortTracker per parallel env (no shared state bug)  #
-            #    - real jerk / lateral accel / TTC (dt-aware)                 #
-            #    - dense per-step shaping reward every step                   #
-            #    - sparse LLM critic at episode end with calibrated prompt    #
+            #  Key v2 fixes over v1:                                          #
+            #    - Use DEDICATED Unity obstacle fields (broken_car_*, moving_ #
+            #      car_*) in the same scaled frame as ego_pos, not the        #
+            #      unscaled gyro/accel smuggler channel. This fixes the       #
+            #      silent 8x distance bug that pegged max_close_speed at 0    #
+            #      across all v1 runs.                                        #
+            #    - Pass real YAW to the tracker so lateral acceleration is    #
+            #      computed from yaw rate (proper a_lat = v * dψ/dt) rather   #
+            #      than the CTE-rate hack that spiked on path-node transits.  #
+            #    - Diagnostic print on the first step of the first env so     #
+            #      you can SEE what telemetry is actually coming through      #
+            #      before committing to a long training run.                  #
             # ============================================================== #
             for env_idx in range(self.config.num_envs):
-                # ---- per-env info dict ----
                 if isinstance(info, (list, tuple, np.ndarray)) and len(info) > env_idx:
                     info_i = info[env_idx]
                 else:
@@ -681,23 +687,68 @@ class PPOTrainer:
                 if not isinstance(info_i, dict):
                     info_i = {}
 
-                # Radar trojan-horse unpack (gyro/accel piggyback obstacle coords)
+                # ---- Obstacle positions (SCALED /8 frame) ----
                 obstacles = []
-                if 'gyro' in info_i and 'accel' in info_i:
-                    bx, bz = info_i['gyro'][0], info_i['gyro'][1]
-                    mx, mz = info_i['accel'][0], info_i['accel'][1]
-                    obstacles = [(bx, bz), (mx, mz)]
+                # Preferred: dedicated Unity fields (already /8 scaled).
+                if 'broken_car_x' in info_i and 'broken_car_z' in info_i:
+                    obstacles.append((float(info_i['broken_car_x']),
+                                      float(info_i['broken_car_z'])))
+                if 'moving_car_x' in info_i and 'moving_car_z' in info_i:
+                    obstacles.append((float(info_i['moving_car_x']),
+                                      float(info_i['moving_car_z'])))
+                # Fallback: the smuggler channel. Unity ships these UNSCALED,
+                # so we divide by 8 to match the ego frame. Only used if the
+                # dedicated fields aren't exposed by the wrapper.
+                if not obstacles and 'gyro' in info_i and 'accel' in info_i:
+                    try:
+                        bx = float(info_i['gyro'][0]) / 8.0
+                        bz = float(info_i['gyro'][1]) / 8.0
+                        mx = float(info_i['accel'][0]) / 8.0
+                        mz = float(info_i['accel'][1]) / 8.0
+                        obstacles = [(bx, bz), (mx, mz)]
+                    except (TypeError, IndexError, ValueError):
+                        pass
 
                 ego_pos = info_i.get('pos', None)
                 speed_i = float(info_i.get('speed', 0.0))
                 cte_i = float(info_i.get('cte', 0.0))
                 steering_i = float(action_np[env_idx][0])
 
+                # ---- Yaw (preferred path for lateral accel) ----
+                # Unity sends yaw either as a scalar field or aggregated with
+                # pitch/roll. Try both shapes.
+                yaw_i = None
+                if 'yaw' in info_i:
+                    try:
+                        yaw_i = float(info_i['yaw'])
+                    except (TypeError, ValueError):
+                        yaw_i = None
+                elif 'euler' in info_i:
+                    try:
+                        yaw_i = float(info_i['euler'][1])
+                    except (TypeError, IndexError, ValueError):
+                        yaw_i = None
+
+                # Diagnostic dump on the very first step, env 0 only.
+                if env_idx == 0 and not getattr(self, '_telemetry_dumped', False):
+                    print("\n[TelemetryDiag] First step info_dict keys:",
+                          sorted(list(info_i.keys())))
+                    print(f"[TelemetryDiag] speed={speed_i}  cte={cte_i}  "
+                          f"yaw={yaw_i}  ego_pos={ego_pos}  obstacles={obstacles}")
+                    if yaw_i is None:
+                        print("[TelemetryDiag] WARNING: no 'yaw' field found. "
+                              "Falling back to CTE-rate for lateral accel. "
+                              "Consider extending the wrapper to expose yaw.")
+                    if not obstacles:
+                        print("[TelemetryDiag] WARNING: no obstacle positions found.")
+                    self._telemetry_dumped = True
+
                 tracker = self.comfort_trackers[env_idx]
                 step_metrics = tracker.step(
                     speed=speed_i,
                     steering_cmd=steering_i,
                     cte=cte_i,
+                    yaw_deg=yaw_i,
                     ego_pos=ego_pos,
                     obstacles=obstacles,
                 )
@@ -717,14 +768,10 @@ class PPOTrainer:
                     else:
                         llm_score = 0.0
 
-                    # Normalize the LLM bonus by sqrt(episode_length) so longer
-                    # episodes don't drown it and shorter ones don't get a
-                    # disproportionate kick. Keeps gradient comparable across
-                    # episode lengths.
                     norm = math.sqrt(max(1, summary['episode_steps']) / 200.0)
                     reward[env_idx] += self.config.comfort_llm_weight * llm_score * norm
 
-                    if env_idx == 0:  # console spam control
+                    if env_idx == 0:
                         print(
                             f"\n[Comfort] env{env_idx} | "
                             f"min_dist={summary['min_distance_m']:.1f}m  "
@@ -734,10 +781,10 @@ class PPOTrainer:
                             f"rms_jerk={summary['rms_jerk_mps3']:.2f}  "
                             f"min_ttc={summary['min_ttc_s']:.2f}s  "
                             f"pred_std={summary['predictability_std_a_lon']:.2f}  "
+                            f"respawns={summary['respawn_events']}  "
                             f"LLM={llm_score:+.2f}"
                         )
 
-                    # TensorBoard logging — every env contributes
                     if hasattr(self, 'writer') and self.writer is not None:
                         gs = self.global_step
                         self.writer.add_scalar("comfort/llm_score", llm_score, gs)
@@ -750,6 +797,7 @@ class PPOTrainer:
                         self.writer.add_scalar("comfort/min_ttc_s", summary['min_ttc_s'], gs)
                         self.writer.add_scalar("comfort/predictability_std", summary['predictability_std_a_lon'], gs)
                         self.writer.add_scalar("comfort/fraction_close", summary['fraction_close'], gs)
+                        self.writer.add_scalar("comfort/respawn_events", summary['respawn_events'], gs)
 
                     tracker.reset()
             # ============================================================== #
