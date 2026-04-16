@@ -43,7 +43,10 @@ import re
 import math
 from openai import OpenAI
 
-llm_port = os.getenv("QWEN_PORT", "8000") 
+# NEW: dedicated comfort module — proper jerk, lateral accel, TTC, per-env state.
+from comfort_metrics import ComfortTracker, build_comfort_prompt
+
+llm_port = os.getenv("QWEN_PORT", "8000")
 
 # Connect to LLM using custom port
 client = OpenAI(
@@ -51,26 +54,28 @@ client = OpenAI(
     api_key="EMPTY"
 )
 
-def get_social_compliance_score(min_distance, harsh_corrections, harsh_brakes, aggressive_cutoffs, max_close_speed):
-    prompt = (
-        f"The autonomous vehicle completed a maneuver. The minimum distance to the nearest vehicle was {min_distance:.1f} meters. "
-        f"The maximum speed while passing was {max_close_speed:.1f} m/s. "
-        f"There were {harsh_corrections} erratic steering twitches, {harsh_brakes} harsh brake-checks, "
-        f"and {aggressive_cutoffs} aggressive lateral cut-offs. "
-        f"IMPORTANT: The vehicle is on a race track. If the maximum speed is less than 0.5 m/s, the car is dangerously blocking traffic and should receive a heavily negative score. "
-        f"As an external observer sharing the road, rate the car's social compliance and safety from -1.0 (dangerous/erratic) to 1.0 (polite/predictable). "
-        f"Respond with ONLY the number and no other text."
-    )
 
+def get_social_compliance_score(summary: dict) -> float:
+    """Ask the LLM critic to score one episode in [-1, 1].
+
+    Improvements over the original:
+      - Calibrated few-shot anchors in the prompt -> stable scale across runs.
+      - Continuous physical metrics (rms_jerk, max_lat_accel, min_ttc) instead
+        of frame-rate-dependent counts.
+      - Sturdier parsing + clamped output.
+    """
+    prompt = build_comfort_prompt(summary)
     try:
         response = client.chat.completions.create(
             model="Qwen/Qwen2.5-7B-Instruct",
             messages=[
-                {"role": "system", "content": "You are a human evaluating a robot car's etiquette."},
-                {"role": "user", "content": prompt}
+                {"role": "system",
+                 "content": "You are a calibrated passenger-comfort rater. "
+                            "Return only a single number in [-1, 1]."},
+                {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=10
+            max_tokens=10,
         )
         reply = response.choices[0].message.content.strip()
         match = re.search(r'-?\d+\.\d+|-?\d+', reply)
@@ -121,6 +126,13 @@ class PPOConfig:
     reward_distance_weight: float = 0.0  # Weight for distance reward component
     reward_done_penalty: float = -1.0  # Penalty for episode termination (crash/off-track)
     reward_lin_combination: bool = False  # Use linear combination of reward terms
+
+    # Comfort / Coadaptive shaping (NEW)
+    comfort_dense_weight: float = 1.0   # multiplier on per-step ComfortTracker shaping
+    comfort_llm_weight: float = 1.0     # multiplier on end-of-episode LLM critic score
+    comfort_llm_enabled: bool = True    # turn off to ablate the LLM critic
+    comfort_dense_enabled: bool = True  # turn off to ablate dense shaping
+    sim_dt: float = 0.05                # seconds per env step (Donkey ~20Hz). Used for jerk/accel.
 
     # Centering Reward Spline
     centering_setpoint_x: float = 0.3  # X-position for spline points 1 and 3 (0.0 to 1.0)
@@ -505,6 +517,15 @@ class PPOTrainer:
         # Track last seen lap counts per environment to detect new laps
         self.last_seen_lap_counts = [0] * config.num_envs
 
+        # NEW: per-environment comfort trackers — fixes the original bug where
+        # a single self.ep_min_distance attribute was shared across all envs.
+        self.comfort_trackers = [
+            ComfortTracker(dt=config.sim_dt) for _ in range(config.num_envs)
+        ]
+        # Effective dt scales with frame_skip
+        for tr in self.comfort_trackers:
+            tr.dt = config.sim_dt * max(1, config.frame_skip)
+
         # Setup visualization
         self.visualize = config.visualize
         self.visualizer = VisualizationWindow(
@@ -642,130 +663,96 @@ class PPOTrainer:
             # Step environment
             next_obs_np, reward, terminated, truncated, info = self.envs.step(action_np)
 
-            # --- Extract and Prepare Info Dictionary ---
-            # Standardize the info dict once at the top
-            info_dict = info[0] if isinstance(info, (list, tuple, np.ndarray)) and len(info) > 0 else info
-
-            # --- 3. Radar Trojan Horse Unpacking ---
-            # We do this immediately so all downstream logic has the coordinates
-            if 'gyro' in info_dict and 'accel' in info_dict:
-                # gyro is a tuple of (gyro_x, gyro_y, gyro_z)
-                info_dict['broken_car_x'] = info_dict['gyro'][0]
-                info_dict['broken_car_z'] = info_dict['gyro'][1]
-                
-                # accel is a tuple of (accel_x, accel_y, accel_z)
-                info_dict['moving_car_x'] = info_dict['accel'][0]
-                info_dict['moving_car_z'] = info_dict['accel'][1]
-
-            # --- PHASE B & C: COADAPTIVE ALIGNMENT LOOP (Social Compliance) ---
-            if not isinstance(info_dict, dict):
-                info_dict = {}
-
-            # 1. Initialize trackers for a new episode
-            if not hasattr(self, "ep_min_distance"):
-                self.ep_min_distance = 10.0
-                self.ep_harsh_corrections = 0
-                self.ep_harsh_brakes = 0
-                self.ep_aggressive_cutoffs = 0
-                self.ep_max_close_speed = 0.0
-
-                self.last_steering = action_np[0][0]
-                self.last_speed = info_dict.get('speed', 0.0)
-                self.last_cte = info_dict.get('cte', 0.0)
-
-            # Extract current speed and CTE
-            current_speed = info_dict.get('speed', 0.0)
-            current_cte = info_dict.get('cte', 0.0)
-            current_steering = action_np[0][0]
-
-            # 2. Track Erratic Steering
-            if abs(current_steering - self.last_steering) > 0.5:
-                self.ep_harsh_corrections += 1
-            self.last_steering = current_steering
-
-            # 3. Track Harsh Braking (Brake-checks)
-            if (self.last_speed - current_speed) > 1.0: # Dropped speed by > 1 m/s in a single frame
-                self.ep_harsh_brakes += 1
-            self.last_speed = current_speed
-
-            # 4. Track Aggressive Cut-offs (Lateral Swipes)
-            if abs(current_cte - self.last_cte) > 0.5: # Moved laterally very quickly
-                self.ep_aggressive_cutoffs += 1
-            self.last_cte = current_cte
-
-            # 5. Track Min Distance & Fly-By Speed (Using Real-Time Obstacles)
-            current_distance = 10.0
-            
-            if 'pos' in info_dict:
-                ego_x, ego_y, ego_z = info_dict['pos']
-                
-                # --- DIAGNOSTIC PRINT ---
-                # print(f" DEBUG -> Ego Car X: {ego_x:.2f}, Z: {ego_z:.2f}")
-                
-                # Check moving car
-                if 'moving_car_x' in info_dict and 'moving_car_z' in info_dict:
-                    obs_x = info_dict['moving_car_x']
-                    obs_z = info_dict['moving_car_z']
-                    dist_to_moving = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
-                    current_distance = min(current_distance, dist_to_moving)
-                    # print(f"    Moving Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_moving:.2f}")
+            # ============================================================== #
+            #  COADAPTIVE COMFORT LOOP (per-env, dense + sparse)              #
+            #                                                                 #
+            #  Replaces the original single-env inline tracker. Now:          #
+            #    - one ComfortTracker per parallel env (no shared state bug)  #
+            #    - real jerk / lateral accel / TTC (dt-aware)                 #
+            #    - dense per-step shaping reward every step                   #
+            #    - sparse LLM critic at episode end with calibrated prompt    #
+            # ============================================================== #
+            for env_idx in range(self.config.num_envs):
+                # ---- per-env info dict ----
+                if isinstance(info, (list, tuple, np.ndarray)) and len(info) > env_idx:
+                    info_i = info[env_idx]
                 else:
-                    print("    WARNING: Python is NOT receiving 'moving_car_x'")
+                    info_i = info if env_idx == 0 else {}
+                if not isinstance(info_i, dict):
+                    info_i = {}
 
-                # Check broken car
-                if 'broken_car_x' in info_dict and 'broken_car_z' in info_dict:
-                    obs_x = info_dict['broken_car_x']
-                    obs_z = info_dict['broken_car_z']
-                    dist_to_broken = math.sqrt((ego_x - obs_x)**2 + (ego_z - obs_z)**2)
-                    current_distance = min(current_distance, dist_to_broken)
-                    # print(f"    Broken Car -> X: {obs_x:.2f}, Z: {obs_z:.2f} | Distance: {dist_to_broken:.2f}")
-                else:
-                    print("    WARNING: Python is NOT receiving 'broken_car_x'")
-                # ------------------------
-            
-            self.ep_min_distance = min(self.ep_min_distance, current_distance)
-            
-            # Fly-By Speed & Dense Proximity Penalty
-            if current_distance < 5.0:
-                self.ep_max_close_speed = max(self.ep_max_close_speed, current_speed)
-                
-                # --- NEW: DENSE PROXIMITY PENALTY ---
-                # Subtracts a tiny fraction of reward for EVERY FRAME spent too close.
-                # Formula: At 4.9m = -0.005 penalty. At 1.0m = -0.20 penalty.
-                proximity_penalty = -0.05 * (5.0 - current_distance)
-                
-                # Inject the penalty directly into this frame's reward
-                reward[0] += proximity_penalty
+                # Radar trojan-horse unpack (gyro/accel piggyback obstacle coords)
+                obstacles = []
+                if 'gyro' in info_i and 'accel' in info_i:
+                    bx, bz = info_i['gyro'][0], info_i['gyro'][1]
+                    mx, mz = info_i['accel'][0], info_i['accel'][1]
+                    obstacles = [(bx, bz), (mx, mz)]
 
-            # 6. End of Episode LLM Call & TensorBoard Logging
-            is_done = terminated[0] or truncated[0]
-            if is_done:
-                llm_score = get_social_compliance_score(
-                    self.ep_min_distance, 
-                    self.ep_harsh_corrections,
-                    self.ep_harsh_brakes,
-                    self.ep_aggressive_cutoffs,
-                    self.ep_max_close_speed
+                ego_pos = info_i.get('pos', None)
+                speed_i = float(info_i.get('speed', 0.0))
+                cte_i = float(info_i.get('cte', 0.0))
+                steering_i = float(action_np[env_idx][0])
+
+                tracker = self.comfort_trackers[env_idx]
+                step_metrics = tracker.step(
+                    speed=speed_i,
+                    steering_cmd=steering_i,
+                    cte=cte_i,
+                    ego_pos=ego_pos,
+                    obstacles=obstacles,
                 )
-                
-                print(f"\n[Phase C] Episode Finished! Min Dist: {self.ep_min_distance:.1f}m | Max Close Speed: {self.ep_max_close_speed:.1f}m/s")
-                print(f"[Phase C] Erratic Steers: {self.ep_harsh_corrections} | Brake-Checks: {self.ep_harsh_brakes} | Cut-offs: {self.ep_aggressive_cutoffs}")
-                print(f"[Phase C] Qwen Social Score: {llm_score} (Added to reward)")
-                
-                reward[0] += llm_score 
-                
-                # DIRECT TensorBoard logging (Bypassing info dict reset issues!)
-                if hasattr(self, 'writer') and self.writer is not None:
-                    self.writer.add_scalar("human_comfort/social_score", llm_score, self.global_step)
-                    self.writer.add_scalar("human_comfort/harsh_jerks", self.ep_harsh_corrections, self.global_step)
-                    self.writer.add_scalar("human_comfort/harsh_brakes", self.ep_harsh_brakes, self.global_step)
-                    self.writer.add_scalar("human_comfort/aggressive_cutoffs", self.ep_aggressive_cutoffs, self.global_step)
-                    self.writer.add_scalar("human_comfort/min_distance_m", self.ep_min_distance, self.global_step)
-                    self.writer.add_scalar("human_comfort/max_close_speed", self.ep_max_close_speed, self.global_step)
 
-                # Cleanly reset trackers for the next spawn
-                delattr(self, "ep_min_distance") 
-            # ----------------------------------------------
+                # ---- DENSE per-step comfort shaping ----
+                if self.config.comfort_dense_enabled:
+                    dense_r = self.config.comfort_dense_weight * tracker.dense_comfort_reward(step_metrics)
+                    reward[env_idx] += dense_r
+
+                # ---- SPARSE end-of-episode LLM critic ----
+                is_done_i = bool(terminated[env_idx] or truncated[env_idx])
+                if is_done_i:
+                    summary = tracker.episode_summary()
+
+                    if self.config.comfort_llm_enabled:
+                        llm_score = get_social_compliance_score(summary)
+                    else:
+                        llm_score = 0.0
+
+                    # Normalize the LLM bonus by sqrt(episode_length) so longer
+                    # episodes don't drown it and shorter ones don't get a
+                    # disproportionate kick. Keeps gradient comparable across
+                    # episode lengths.
+                    norm = math.sqrt(max(1, summary['episode_steps']) / 200.0)
+                    reward[env_idx] += self.config.comfort_llm_weight * llm_score * norm
+
+                    if env_idx == 0:  # console spam control
+                        print(
+                            f"\n[Comfort] env{env_idx} | "
+                            f"min_dist={summary['min_distance_m']:.1f}m  "
+                            f"max_close_v={summary['max_close_speed_mps']:.1f}m/s  "
+                            f"a_lat_max={summary['max_lateral_accel_mps2']:.2f}  "
+                            f"brake_max={summary['max_brake_decel_mps2']:.2f}  "
+                            f"rms_jerk={summary['rms_jerk_mps3']:.2f}  "
+                            f"min_ttc={summary['min_ttc_s']:.2f}s  "
+                            f"pred_std={summary['predictability_std_a_lon']:.2f}  "
+                            f"LLM={llm_score:+.2f}"
+                        )
+
+                    # TensorBoard logging — every env contributes
+                    if hasattr(self, 'writer') and self.writer is not None:
+                        gs = self.global_step
+                        self.writer.add_scalar("comfort/llm_score", llm_score, gs)
+                        self.writer.add_scalar("comfort/min_distance_m", summary['min_distance_m'], gs)
+                        self.writer.add_scalar("comfort/max_close_speed", summary['max_close_speed_mps'], gs)
+                        self.writer.add_scalar("comfort/max_lateral_accel", summary['max_lateral_accel_mps2'], gs)
+                        self.writer.add_scalar("comfort/max_brake_decel", summary['max_brake_decel_mps2'], gs)
+                        self.writer.add_scalar("comfort/rms_jerk", summary['rms_jerk_mps3'], gs)
+                        self.writer.add_scalar("comfort/rms_steering_rate", summary['rms_steering_rate_per_s'], gs)
+                        self.writer.add_scalar("comfort/min_ttc_s", summary['min_ttc_s'], gs)
+                        self.writer.add_scalar("comfort/predictability_std", summary['predictability_std_a_lon'], gs)
+                        self.writer.add_scalar("comfort/fraction_close", summary['fraction_close'], gs)
+
+                    tracker.reset()
+            # ============================================================== #
             done = np.logical_or(terminated, truncated)
 
             # Visualization (show first environment)
@@ -1379,6 +1366,14 @@ def main():
     parser.add_argument("--centering-setpoint-x", type=float, default=0.3, help="x-position for spline points 1 and 3 (0.0 to 1.0)")
     parser.add_argument("--centering-setpoint-y", type=float, default=0.8, help="y-value for spline points 1 and 3 (0.0 to 1.0)")
 
+    # Comfort / Coadaptive (NEW) — use these to ablate for RQ1
+    parser.add_argument("--comfort-dense-weight", type=float, default=1.0, help="weight on per-step comfort shaping")
+    parser.add_argument("--comfort-llm-weight", type=float, default=1.0, help="weight on end-of-episode LLM critic")
+    parser.add_argument("--no-comfort-dense", dest="comfort_dense_enabled", action="store_false", help="disable dense comfort shaping (ablation)")
+    parser.add_argument("--no-comfort-llm", dest="comfort_llm_enabled", action="store_false", help="disable LLM critic (ablation: pure dense)")
+    parser.add_argument("--sim-dt", type=float, default=0.05, help="seconds per env step (used for jerk/accel)")
+    parser.set_defaults(comfort_dense_enabled=True, comfort_llm_enabled=True)
+
     # Training
     parser.add_argument("--total-timesteps", type=int, default=1000000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -1448,6 +1443,11 @@ def main():
         log_dir=args.log_dir,
         model_dir=args.model_dir,
         launch_sim=not args.no_launch,
+        comfort_dense_weight=args.comfort_dense_weight,
+        comfort_llm_weight=args.comfort_llm_weight,
+        comfort_dense_enabled=args.comfort_dense_enabled,
+        comfort_llm_enabled=args.comfort_llm_enabled,
+        sim_dt=args.sim_dt,
     )
 
 
