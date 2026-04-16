@@ -1,4 +1,5 @@
 """
+comfort_metrics.py — v2
 -----------------------
 Passenger-comfort and social-driving telemetry for the coadaptive value
 alignment loop.
@@ -145,15 +146,24 @@ class ComfortTracker:
         if is_discontinuity:
             self.ep_respawn_events += 1
 
-        # Longitudinal acceleration
+        # Smoothed speed for derivative stability. Raw speed at 20 Hz has
+        # per-frame quantization noise that double-differentiating turns
+        # into massive spurious jerk. A 3-tap moving average removes most
+        # of it without destroying true acceleration events.
+        self.speed_hist.append(speed)
+        if len(self.speed_hist) >= 3:
+            speed_smooth = sum(list(self.speed_hist)[-3:]) / 3.0
+        else:
+            speed_smooth = speed
+
+        # Longitudinal acceleration (on smoothed speed)
         if self.last_speed is not None and not is_discontinuity:
-            a_lon = (speed - self.last_speed) / dt
+            a_lon = (speed_smooth - self.last_speed) / dt
             valid_a_lon = True
         else:
             a_lon = 0.0
             valid_a_lon = False
-        self.last_speed = speed
-        self.speed_hist.append(speed)
+        self.last_speed = speed_smooth
         self.a_lon_hist.append(a_lon)
 
         # Longitudinal jerk
